@@ -218,12 +218,12 @@ Note: The data paths are jointly indexed through `constants.py` and `conf/*.yaml
 
 > To evaluate the policy in simulation, please refer to [eval.md](./re3sim/eval.md).
 
-## 📝 TODO List
+<!-- ## 📝 TODO List
 
 - \[ \] Code formatting.
 - \[ \] More real-to-sim-to-real tasks.
 - \[ \] The user-friendly GUI.
-- \[ \] Unified rendering implementation and articulation reconstruction.
+- \[ \] Unified rendering implementation and articulation reconstruction. -->
 
 ## 🔗 Citation
 
