@@ -15,24 +15,26 @@
 <div align="center">
     <br>
 <div style="text-align: center;">
-    <a href="https://scholar.google.com/citations?hl=en&user=Mo8I5WMAAAAJ"  target="_blank">Xiaoshen Han</a> &emsp;
-    <a href="https://minghuanliu.com/"  target="_blank">Minghuan Liu</a><sup>^</sup> &emsp;
-    <a href="https://yilunchen.com/about/"  target="_blank">Yilun Chen</a><sup>^&dagger;</sup> &emsp;
-    <a href="" target="_blank">Junqiu Yu</a> &emsp;
-    <a href="https://shawlyu.github.io" target="_blank">Xiaoyang Lyu</a> &emsp;
-    <a href="https://github.com/Nimolty?tab=overview&from=2024-01-01&to=2024-01-31"  target="_blank">Yang Tian</a> &emsp;
-    <br>
-    <a href=""  target="_blank">Bolun Wang</a> &emsp;
-    <a href="https://wnzhang.net" target="_blank">Weinan Zhang</a> &emsp;
-    <a href="https://oceanpang.github.io" target="_blank">Jiangmiao Pang</a><sup>&dagger;</sup> &emsp;
-    <br>
-    <p style="text-align: center; margin-bottom: 0;">
-        <span class="author-note"><sup>^</sup>Project lead</span>&emsp;
-        <span class="author-note"><sup>&dagger;</sup>Corresponding author</span>
-    </p>
+  <a href="https://scholar.google.com/citations?hl=en&user=Mo8I5WMAAAAJ"  target="_blank">Xiaoshen Han</a> <sup>*</sup> &emsp;
+  <a href="" target="_blank">Junqiu Yu</a> <sup>*</sup> &emsp;
+  <a href="https://minghuanliu.com/"  target="_blank">Minghuan Liu</a> <sup>^</sup>&emsp;
+  <a href="https://yilunchen.com/about/"  target="_blank">Yilun Chen</a><sup>^ &dagger;</sup> &emsp;
+  <a href="https://shawlyu.github.io" target="_blank">Xiaoyang Lyu</a> &emsp;
+  <a href="https://github.com/Nimolty?tab=overview&from=2024-01-01&to=2024-01-31"  target="_blank">Yang Tian</a> &emsp;
+  <br>
+  <a href=""  target="_blank">Bolun Wang</a> &emsp;
+  <a href="https://wnzhang.net" target="_blank">Weinan Zhang</a> <sup>&dagger;</sup>&emsp;
+  <a href="https://oceanpang.github.io" target="_blank">Jiangmiao Pang</a><sup>&dagger;</sup> &emsp;
 <br>
-<p style="text-align: center;">
-    Shanghai Jiao Tong University &emsp; Shanghai AI Lab &emsp;The University of Hong Kong</p>
+    <!-- <p style="text-align: center; margin-bottom: 0;"> -->
+    <span class="author-note"><sup>*</sup>Equal contribution</span>&nbsp;&nbsp;&nbsp;&nbsp;
+      <span class="author-note"><sup>^</sup>Project lead</span>&nbsp;&nbsp;&nbsp;&nbsp;
+      <span class="author-note"><sup>&dagger;</sup>Corresponding author</span>
+    <!-- </p> -->
+<br>
+    Shanghai Jiao Tong University &emsp; Shanghai AI Lab &emsp;The University of Hong Kong
+<br>
+    IEEE International Conference on Robotics and Automation (ICRA 2026)
 </div>
 </div>
 
@@ -230,11 +232,11 @@ Note: The data paths are jointly indexed through `constants.py` and `conf/*.yaml
 If you find our work helpful, please cite:
 
 ```latex
-@article{han2025re3sim,
-  title={Re$^3$Sim: Generating High-Fidelity Simulation Data via 3D-Photorealistic Real-to-Sim for Robotic Manipulation},
-  author={Han, Xiaoshen and Liu, Minghuan and Chen, Yilun and Yu, Junqiu and Lyu, Xiaoyang and Tian, Yang and Wang, Bolun and Zhang, Weinan and Pang, Jiangmiao},
-  journal={arXiv preprint arXiv:2502.08645},
-  year={2025}
+@inproceedings{han2026re3sim,
+  title={RE$^3$SIM: Generating High-Fidelity Simulation Data via 3D-Photorealistic Real-to-Sim for Robotic Manipulation},
+  author={Han, Xiaoshen and Yu, Junqiu and Liu, Minghuan and Chen, Yilun and Lyu, Xiaoyang and Tian, Yang and Wang, Bolun and Zhang, Weinan and Zhang, Weinan and Pang, Jiangmiao},
+  booktitle={IEEE International Conference on Robotics and Automation (ICRA)},
+  year={2026}
 }
 ```
 
