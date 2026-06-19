@@ -30,6 +30,11 @@ ENV PATH="/root/miniconda/bin:${PATH}"
 # Initialize conda
 RUN conda init bash && \
     echo "conda activate base" >> ~/.bashrc
+    
+    
+## Accept Anaconda Terms of Service 
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
 # Create and configure Python 3.10 conda environment
 RUN conda create -n py10 python=3.10 -y && \
