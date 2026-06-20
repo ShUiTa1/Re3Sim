@@ -260,8 +260,11 @@ and create a container from the loaded image by
 ```bash
 docker run --name re3sim --entrypoint bash -itd --runtime=nvidia --gpus='"device=0"' -e "ACCEPT_EULA=Y" --rm --network=bridge --shm-size="28g" -e "PRIVACY_CONSENT=Y" \
     -v ~/Projects/Re3Sim_Host:/root/resources:rw \
+    -v ~/Projects/Re3Sim/re3sim:/root/dev/real2sim2real:rw \
     re3sim_yuzheng:openmvs
 ```
 
 
+
+## Reconfigure customized scene
 
