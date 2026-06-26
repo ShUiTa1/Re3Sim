@@ -198,9 +198,7 @@ Follow the official building guide in https://github.com/cdcseacave/openMVS/wiki
 
 or commands below.
 
----
 
-## Install OpenMVS
 
 ```bash
 apt-get update
