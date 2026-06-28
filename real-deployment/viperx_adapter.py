@@ -1,12 +1,15 @@
-"""Re3Sim-facing adapter template for a LeRobot-controlled ViperX300s.
+"""Re3Sim-facing robot adapter for a LeRobot-controlled ViperX300s.
 
 Purpose
 -------
-This module keeps three responsibilities separated:
+This module exposes a small, stable robot interface to data collection,
+calibration, and Re3Sim-side code. Implementation details stay below the
+interface boundary:
 
 1. LeRobot owns hardware connection, motor observations, and position commands.
-2. Robotics Toolbox owns forward/inverse kinematics.
-3. Re3Sim consumes robot-agnostic joint and end-effector interfaces.
+2. The injected kinematics object owns forward/inverse kinematics.
+3. Calibration code consumes robot-agnostic joint and end-effector interfaces.
+4. Re3Sim consumes calibration products instead of talking to hardware.
 
 The adapter receives an existing LeRobot ``ViperX`` instance. Motor names,
 calibration ranges, raw encoder positions, and encoder resolutions are read
@@ -18,11 +21,11 @@ Coordinate and unit contract
 - Public joint vectors use radians and have shape ``(6,)``.
 - End-effector poses are 4x4 transforms ``T_base_ee``.
 - Encoder IO uses LeRobot's motor bus with ``normalize=False``.
-- Shadow motors and the gripper are not part of the six-DoF kinematic vector.
+- Shadow motors and the gripper are not part of the arm joint vector.
 
 The adapter must not be used on hardware until:
 - encoder zero positions and signs have been aligned with the URDF;
-- the configured URDF/end-effector frame matches the physical robot;
+- the configured model/end-effector frame matches the physical robot;
 - ``home_q_rad`` and motion limits have been confirmed on the real arm.
 """
 
@@ -55,20 +58,25 @@ class IKResult:
 
 
 class ViperXKinematics:
-    """Small wrapper around a Robotics Toolbox ViperX model.
+    """Small wrapper around an injected ViperX kinematics model.
 
-    Construct/load the Robotics Toolbox model outside this class, then inject
-    it here. Injection avoids hard-coding an unverified URDF-loading procedure
-    in the hardware adapter.
+    Construct/load the kinematics model outside this class, then inject it
+    here. Injection avoids hard-coding an unverified URDF-loading procedure or
+    end-effector frame in the hardware adapter.
 
     Expected model methods:
-    - ``fkine(q, end=...)``
-    - ``ikine_LM(T, q0=..., end=..., joint_limits=True)``
+    - ``fkine(q, ...)``
+    - ``ikine_LM(T, q0=..., joint_limits=True, ...)``
     """
 
-    def __init__(self, robot_model: Any, *, ee_link: str = "ee_gripper_link"):
+    def __init__(self, robot_model: Any, *, ee_link: str | None = None):
         self.robot_model = robot_model
         self.ee_link = ee_link
+
+    def _end_kwargs(self) -> dict[str, str]:
+        """Pass an explicit end frame only when one has been configured."""
+
+        return {} if self.ee_link is None else {"end": self.ee_link}
 
     def validate_joints(self, q_rad: Sequence[float]) -> FloatArray:
         q = np.asarray(q_rad, dtype=np.float64)
@@ -112,7 +120,7 @@ class ViperXKinematics:
         """Return ``T_base_ee`` for a six-joint ViperX vector in radians."""
 
         q = self.validate_joints(q_rad)
-        pose = self.robot_model.fkine(q, end=self.ee_link)
+        pose = self.robot_model.fkine(q, **self._end_kwargs())
         matrix = getattr(pose, "A", pose)
         return self.validate_transform(matrix)
 
@@ -129,8 +137,8 @@ class ViperXKinematics:
         solution = self.robot_model.ikine_LM(
             target,
             q0=seed,
-            end=self.ee_link,
             joint_limits=True,
+            **self._end_kwargs(),
         )
 
         q = np.asarray(solution.q, dtype=np.float64)
@@ -152,7 +160,7 @@ class ViperXKinematics:
 
 
 class ViperXAdapter:
-    """Adapt LeRobot ViperX IO to Re3Sim joint/EE semantics.
+    """Adapt LeRobot ViperX IO to a stable joint/EE robot interface.
 
     ``robot`` is an already configured LeRobot ViperX object. The adapter does
     not duplicate its port, ID, calibration directory, motor models, or motor
@@ -162,7 +170,7 @@ class ViperXAdapter:
     - ``urdf_zero_raw[joint]``: raw encoder value representing URDF q=0.
     - ``urdf_joint_sign[joint]``: +1/-1 mapping encoder direction to URDF q.
 
-    Camera capture stays outside this class.
+    Camera capture and calibration algorithms stay outside this class.
     """
 
     def __init__(
@@ -402,10 +410,20 @@ class ViperXAdapter:
             self.raw_to_rad(self.read_raw_joints())
         )
 
+    def read_joints(self) -> FloatArray:
+        """Stable interface alias for measured arm joints in radians."""
+
+        return self.read_joints_rad()
+
     def get_ee_pose(self) -> FloatArray:
         """Return the measured ``T_base_ee`` obtained by FK."""
 
         return self.kinematics.fk(self.read_joints_rad())
+
+    def get_end_effector_pose(self) -> FloatArray:
+        """Stable interface alias for the measured end-effector pose."""
+
+        return self.get_ee_pose()
 
     def _write_raw_joints(self, raw_targets: Mapping[str, int]) -> None:
         """Write raw targets through LeRobot's public motor-bus interface."""
@@ -463,6 +481,21 @@ class ViperXAdapter:
             f"maximum joint error is {max_error:.6f} rad."
         )
 
+    def move_to_joint_positions(
+        self,
+        q_target_rad: Sequence[float],
+        *,
+        timeout_s: float | None = None,
+        tolerance_rad: float | None = None,
+    ) -> FloatArray:
+        """Stable interface alias for joint-space motion."""
+
+        return self.move_joints(
+            q_target_rad,
+            timeout_s=timeout_s,
+            tolerance_rad=tolerance_rad,
+        )
+
     def move_ee(
         self,
         target_pose: Sequence[Sequence[float]],
@@ -480,6 +513,16 @@ class ViperXAdapter:
             )
         return self.move_joints(result.q_rad)
 
+    def move_to_end_effector_pose(
+        self,
+        target_pose: Sequence[Sequence[float]],
+        *,
+        q_seed: Sequence[float] | None = None,
+    ) -> FloatArray:
+        """Stable interface alias for end-effector motion."""
+
+        return self.move_ee(target_pose, q_seed=q_seed)
+
     def move_home(self) -> FloatArray:
         """Move to the explicitly configured and physically verified home pose."""
 
@@ -488,6 +531,11 @@ class ViperXAdapter:
                 "home_q_rad is not configured. Refusing to assume a zero pose."
             )
         return self.move_joints(self.home_q_rad)
+
+    def go_home(self) -> FloatArray:
+        """Stable interface alias for returning to the verified home pose."""
+
+        return self.move_home()
 
     def get_obs(self) -> dict[str, Any]:
         """Return a small Re3Sim-facing observation plus raw driver state."""
