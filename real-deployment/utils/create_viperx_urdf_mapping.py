@@ -7,7 +7,8 @@ Interactive flow:
 3. Open the LeRobot Dynamixel bus directly and disable torque by default.
 4. Let the user match the PyBullet home pose and the real arm pose.
 5. Read ``q_home_urdf`` from PyBullet sliders and ``raw_home`` from raw encoders.
-6. Infer per-joint signs by manual URDF-positive joint motion.
+6. Use LeRobot calibration ``drive_mode`` to derive per-joint signs, unless
+   ``--signs=...`` is supplied as an explicit override.
 7. Save an adapter-layer mapping JSON.
 
 Safety boundary:
@@ -73,6 +74,8 @@ class CreateViperXUrdfMappingConfig:
 
 @dataclass
 class PyBulletHomeSelector:
+    """State needed to read the PyBullet home-pose sliders."""
+
     pybullet: Any
     client_id: int
     robot_id: int
@@ -80,6 +83,8 @@ class PyBulletHomeSelector:
 
 
 def parse_six_float_list(value: str, *, field_name: str) -> tuple[float, ...]:
+    """Parse six comma-separated CLI numbers in arm-joint order."""
+
     try:
         values = tuple(float(part.strip()) for part in value.split(","))
     except ValueError as exc:
@@ -94,6 +99,8 @@ def parse_six_float_list(value: str, *, field_name: str) -> tuple[float, ...]:
 
 
 def parse_six_sign_list(value: str) -> tuple[int, ...]:
+    """Parse six CLI signs and require every value to be +1 or -1."""
+
     values = parse_six_float_list(value, field_name="signs")
     signs = tuple(int(value) for value in values)
     if any(value not in (-1, 1) for value in signs):
@@ -102,6 +109,8 @@ def parse_six_sign_list(value: str) -> tuple[int, ...]:
 
 
 def require_interactive_confirmation(cfg: CreateViperXUrdfMappingConfig) -> None:
+    """Require an explicit terminal confirmation before touching GUI or hardware."""
+
     if cfg.yes:
         return
     print("This script will create the adapter-layer ViperX URDF mapping.")
@@ -116,6 +125,8 @@ def require_interactive_confirmation(cfg: CreateViperXUrdfMappingConfig) -> None
 
 
 def make_lerobot_viperx(cfg: CreateViperXUrdfMappingConfig) -> Any:
+    """Build the LeRobot ViperX instance from the draccus robot config."""
+
     if not isinstance(cfg.robot, ViperXConfig):
         raise TypeError(
             f"Expected --robot.type=viperx, got {cfg.robot.type!r}."
@@ -124,6 +135,8 @@ def make_lerobot_viperx(cfg: CreateViperXUrdfMappingConfig) -> Any:
 
 
 def discover_arm_joint_names(robot: Any) -> tuple[str, ...]:
+    """Return the six kinematic arm joints from the LeRobot motor list."""
+
     motor_names = tuple(robot.bus.motors)
     arm_joint_names = tuple(
         name for name in motor_names if name not in NON_KINEMATIC_MOTORS
@@ -137,6 +150,8 @@ def discover_arm_joint_names(robot: Any) -> tuple[str, ...]:
 
 
 def calibration_value(calibration: Any, field_name: str) -> Any:
+    """Read a calibration field from either a dict or dataclass-like object."""
+
     if isinstance(calibration, Mapping):
         return calibration[field_name]
     return getattr(calibration, field_name)
@@ -146,6 +161,8 @@ def read_calibration_ranges(
     robot: Any,
     joint_names: Sequence[str],
 ) -> dict[str, dict[str, int]]:
+    """Read safe raw encoder ranges from the loaded LeRobot calibration."""
+
     calibration = getattr(robot, "calibration", None)
     if not calibration:
         raise RuntimeError(
@@ -165,10 +182,35 @@ def read_calibration_ranges(
     return ranges
 
 
+def read_calibration_drive_mode_signs(
+    robot: Any,
+    joint_names: Sequence[str],
+) -> dict[str, int]:
+    """Use LeRobot calibration drive_mode to choose the initial mapping signs."""
+
+    calibration = getattr(robot, "calibration", None)
+    if not calibration:
+        raise RuntimeError(
+            "LeRobot calibration was not loaded. Check --robot.id and "
+            f"--robot.calibration_dir. Expected file: {robot.calibration_fpath}"
+        )
+
+    signs: dict[str, int] = {}
+    for joint in joint_names:
+        if joint not in calibration:
+            raise KeyError(f"LeRobot calibration is missing {joint!r}.")
+        drive_mode = int(calibration_value(calibration[joint], "drive_mode"))
+        # Dynamixel Drive_Mode bit 0 is the direction bit.
+        signs[joint] = -1 if drive_mode & 0x01 else 1
+    return signs
+
+
 def read_encoder_scales(
     robot: Any,
     joint_names: Sequence[str],
 ) -> tuple[dict[str, int], dict[str, float]]:
+    """Read encoder resolution and convert it to radians per tick."""
+
     resolutions: dict[str, int] = {}
     scales: dict[str, float] = {}
     for joint in joint_names:
@@ -182,7 +224,7 @@ def read_encoder_scales(
 
 
 class RawEncoderSession:
-    """Direct raw-encoder bus session for mapping."""
+    """Open the raw motor bus, optionally disable torque, then always disconnect."""
 
     def __init__(
         self,
@@ -196,6 +238,8 @@ class RawEncoderSession:
         self.enable_torque_on_exit = enable_torque_on_exit
 
     def __enter__(self) -> "RawEncoderSession":
+        """Connect to the motor bus before reading raw encoder values."""
+
         self.robot.bus.connect()
         if self.disable_torque:
             print("Disabling torque for manual arm movement...")
@@ -203,6 +247,8 @@ class RawEncoderSession:
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        """Optionally re-enable torque and disconnect without extra torque changes."""
+
         if self.robot.bus.is_connected:
             try:
                 if self.enable_torque_on_exit:
@@ -212,6 +258,8 @@ class RawEncoderSession:
                 self.robot.bus.disconnect(disable_torque=False)
 
     def read_raw_joints(self, joint_names: Sequence[str]) -> dict[str, int]:
+        """Read raw Dynamixel Present_Position ticks for the requested joints."""
+
         values = self.robot.bus.sync_read(
             "Present_Position",
             list(joint_names),
@@ -224,6 +272,8 @@ def validate_raw_ranges(
     raw: Mapping[str, int],
     safe_raw_range: Mapping[str, Mapping[str, int]],
 ) -> None:
+    """Check that a raw encoder snapshot is inside LeRobot calibration ranges."""
+
     violations = {}
     for joint, value in raw.items():
         lower = int(safe_raw_range[joint]["min"])
@@ -238,6 +288,8 @@ def open_pybullet_home_selector(
     cfg: CreateViperXUrdfMappingConfig,
     joint_names: Sequence[str],
 ) -> PyBulletHomeSelector:
+    """Open PyBullet GUI and create one slider per arm joint."""
+
     import pybullet as p
     import pybullet_data
 
@@ -252,10 +304,10 @@ def open_pybullet_home_selector(
 
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     p.resetDebugVisualizerCamera(
-        cameraDistance=1.1,
-        cameraYaw=135,
-        cameraPitch=-25,
-        cameraTargetPosition=[0.2, 0.0, 0.25],
+        cameraDistance=1.2,
+        cameraYaw=180,
+        cameraPitch=-15,
+        cameraTargetPosition=[0.0, 0.0, 0.25],
     )
     p.setGravity(0, 0, -9.81)
     p.loadURDF("plane.urdf")
@@ -302,6 +354,8 @@ def open_pybullet_home_selector(
 
 
 def close_pybullet_home_selector(selector: PyBulletHomeSelector | None) -> None:
+    """Close the PyBullet GUI if it was opened."""
+
     if selector is None:
         return
     selector.pybullet.disconnect(selector.client_id)
@@ -311,6 +365,8 @@ def read_pybullet_q_home(
     selector: PyBulletHomeSelector,
     joint_names: Sequence[str],
 ) -> tuple[float, ...]:
+    """Read slider values and apply them to the PyBullet robot."""
+
     q_values: list[float] = []
     for joint in joint_names:
         joint_index, slider = selector.sliders[joint]
@@ -325,6 +381,8 @@ def wait_for_home_anchor(
     selector: PyBulletHomeSelector,
     joint_names: Sequence[str],
 ) -> tuple[float, ...]:
+    """Wait until the user confirms the matched sim/real home-anchor pose."""
+
     print("\nHome-anchor selection:")
     print("1. Move the PyBullet sliders to the URDF home pose.")
     print("2. Move the real arm to the matching physical pose.")
@@ -345,41 +403,12 @@ def wait_for_home_anchor(
         time.sleep(1.0 / 240.0)
 
 
-def infer_signs_interactively(
-    session: RawEncoderSession,
-    joint_names: Sequence[str],
-) -> dict[str, int]:
-    signs: dict[str, int] = {}
-    print("\nSign inference:")
-    print("Move only the prompted joint in the URDF-positive direction.")
-    print("In PyBullet, increasing the corresponding slider value is URDF-positive.")
-    for joint in joint_names:
-        input(f"\nHold still, then press ENTER to read baseline for {joint}: ")
-        before = session.read_raw_joints(joint_names)
-        input(f"Move {joint} slightly in URDF-positive direction, then press ENTER: ")
-        after = session.read_raw_joints(joint_names)
-        delta = after[joint] - before[joint]
-        if delta == 0:
-            raise RuntimeError(
-                f"No raw encoder change detected for {joint}. "
-                "Move a little more and rerun sign inference."
-            )
-        sign = 1 if delta > 0 else -1
-        print(
-            f"{joint}: raw_before={before[joint]} raw_after={after[joint]} "
-            f"delta={delta} => sign={sign:+d}"
-        )
-        answer = input("Accept this sign? [y/N]: ").strip().lower()
-        if answer != "y":
-            raise SystemExit("Aborted by user.")
-        signs[joint] = sign
-    return signs
-
-
 def named_float_dict(
     joint_names: Sequence[str],
     values: Sequence[float],
 ) -> dict[str, float]:
+    """Convert ordered joint values into a named float dictionary."""
+
     return {joint: float(value) for joint, value in zip(joint_names, values)}
 
 
@@ -387,6 +416,8 @@ def named_int_dict(
     joint_names: Sequence[str],
     values: Sequence[int],
 ) -> dict[str, int]:
+    """Convert ordered joint values into a named integer dictionary."""
+
     return {joint: int(value) for joint, value in zip(joint_names, values)}
 
 
@@ -399,10 +430,13 @@ def build_mapping(
     raw_home: dict[str, int],
     q_home_urdf: tuple[float, ...],
     signs: dict[str, int],
+    sign_source: str,
     resolutions: dict[str, int],
     scales: dict[str, float],
     safe_raw_range: dict[str, dict[str, int]],
 ) -> dict[str, Any]:
+    """Assemble the final home-anchor mapping JSON payload."""
+
     lower, upper = np.asarray(model.qlim, dtype=np.float64)
     urdf_limit = {
         joint: {"lower": float(lo), "upper": float(hi)}
@@ -436,7 +470,7 @@ def build_mapping(
         },
         "source": {
             "home": cfg.home_source,
-            "sign": "manual per-joint URDF-positive movement",
+            "sign": sign_source,
             "note": cfg.note,
         },
         "safety": {
@@ -451,6 +485,8 @@ def build_mapping(
 
 
 def save_mapping(mapping: Mapping[str, Any], path: Path, *, overwrite: bool) -> None:
+    """Write the mapping JSON, refusing to overwrite unless requested."""
+
     path = path.expanduser().resolve()
     if path.exists() and not overwrite:
         raise FileExistsError(f"{path} already exists. Pass --overwrite=true to replace it.")
@@ -461,6 +497,8 @@ def save_mapping(mapping: Mapping[str, Any], path: Path, *, overwrite: bool) -> 
 
 @draccus.wrap()
 def main(cfg: CreateViperXUrdfMappingConfig) -> None:
+    """Create mapping by pairing a PyBullet home pose with a real raw snapshot."""
+
     require_interactive_confirmation(cfg)
 
     model = load_viperx_model(
@@ -491,8 +529,11 @@ def main(cfg: CreateViperXUrdfMappingConfig) -> None:
             if cfg.signs:
                 sign_values = parse_six_sign_list(cfg.signs)
                 signs = named_int_dict(joint_names, sign_values)
+                sign_source = "manual CLI --signs override"
             else:
-                signs = infer_signs_interactively(session, joint_names)
+                signs = read_calibration_drive_mode_signs(robot, joint_names)
+                sign_source = "LeRobot calibration drive_mode direction bit"
+            print(f"signs={signs}")
     finally:
         close_pybullet_home_selector(selector)
 
@@ -504,6 +545,7 @@ def main(cfg: CreateViperXUrdfMappingConfig) -> None:
         raw_home=raw_home,
         q_home_urdf=q_home_urdf,
         signs=signs,
+        sign_source=sign_source,
         resolutions=resolutions,
         scales=scales,
         safe_raw_range=safe_raw_range,
