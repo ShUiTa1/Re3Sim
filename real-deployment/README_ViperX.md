@@ -194,11 +194,48 @@ The repository stays in the backed-up NFS home:
 cd /home/yuzzhu/Projects/Re3Sim_ViperX
 ```
 
-The Python environment and package cache stay on the local `/data` disk. If the
-environment already exists, activate it directly:
+The Python environment and package caches stay on the local `/data` disk.
+Create the Stage 4 environment only once:
 
 ```bash
-mamba activate /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib
+mkdir -p /data/yuzzhu/Re3Sim_ViperX/envs
+mkdir -p /data/yuzzhu/Re3Sim_ViperX/cache/conda
+mkdir -p /data/yuzzhu/Re3Sim_ViperX/cache/pip
+
+CONDA_PKGS_DIRS=/data/yuzzhu/Re3Sim_ViperX/cache/conda \
+conda create -y \
+  -p /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib \
+  python=3.11
+
+conda activate /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib
+
+CONDA_PKGS_DIRS=/data/yuzzhu/Re3Sim_ViperX/cache/conda \
+conda install -y \
+  -p /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib \
+  -c conda-forge \
+  ffmpeg
+
+python -m pip install --cache-dir /data/yuzzhu/Re3Sim_ViperX/cache/pip -e /home/yuzzhu/Projects/Re3Sim_ViperX/lerobot
+python -m pip install --cache-dir /data/yuzzhu/Re3Sim_ViperX/cache/pip draccus pybullet roboticstoolbox-python spatialmath-python
+
+which python
+python --version
+python -m pip -V
+python -c "import lerobot, draccus, pybullet, roboticstoolbox, spatialmath; print('stage4 env ok')"
+```
+
+This uses Conda for environment management and FFmpeg, following the preparation
+style in `lerobot/README-SL.md`. The explicit prefix and cache paths keep the
+environment and downloaded packages out of the 15 GB NFS home. Python remains
+at version 3.11 for this project. FFmpeg is installed as a dependency, but it
+does not have a separate Stage 4 acceptance check.
+
+On every later session, reuse the initialized environment without reinstalling
+it:
+
+```bash
+cd /home/yuzzhu/Projects/Re3Sim_ViperX
+conda activate /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib
 
 which python
 python -m pip -V
@@ -208,23 +245,6 @@ python -m pip -V
 
 ```text
 /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python
-```
-
-Only if the environment does not exist yet, create and install it:
-
-```bash
-mkdir -p /data/yuzzhu/Re3Sim_ViperX/envs
-mkdir -p /data/yuzzhu/Re3Sim_ViperX/cache/pip
-
-mamba create -p /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib python=3.11
-mamba activate /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib
-
-python -m pip install --cache-dir /data/yuzzhu/Re3Sim_ViperX/cache/pip -e /home/yuzzhu/Projects/Re3Sim_ViperX/lerobot
-python -m pip install --cache-dir /data/yuzzhu/Re3Sim_ViperX/cache/pip draccus pybullet roboticstoolbox-python spatialmath-python
-
-which python
-python -m pip -V
-python -c "import lerobot, draccus, pybullet, roboticstoolbox, spatialmath; print('stage4 env ok')"
 ```
 
 Do not use `sudo`. After activation, use normal `python`, `python -m pip`, and
@@ -405,7 +425,7 @@ Stage 4 is accepted when:
 When finished:
 
 ```bash
-mamba deactivate
+conda deactivate
 ```
 
 ## Boundary
