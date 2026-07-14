@@ -195,12 +195,20 @@ cd /home/yuzzhu/Projects/Re3Sim_ViperX
 ```
 
 The Python environment and package caches stay on the local `/data` disk.
+Stage 4 uses the user-level Miniforge installation at
+`/data/yuzzhu/Re3Sim_ViperX/tools/miniforge3`. Do not run `conda init` or modify
+`~/.bashrc`. In every new terminal or SSH session, source Conda once before its
+first use; the same terminal does not need to source it again. This does not
+change the accepted Stage 1/2 Mamba workflow.
+
 Create the Stage 4 environment only once:
 
 ```bash
 mkdir -p /data/yuzzhu/Re3Sim_ViperX/envs
 mkdir -p /data/yuzzhu/Re3Sim_ViperX/cache/conda
 mkdir -p /data/yuzzhu/Re3Sim_ViperX/cache/pip
+
+source /data/yuzzhu/Re3Sim_ViperX/tools/miniforge3/etc/profile.d/conda.sh
 
 CONDA_PKGS_DIRS=/data/yuzzhu/Re3Sim_ViperX/cache/conda \
 conda create -y \
@@ -235,6 +243,7 @@ it:
 
 ```bash
 cd /home/yuzzhu/Projects/Re3Sim_ViperX
+source /data/yuzzhu/Re3Sim_ViperX/tools/miniforge3/etc/profile.d/conda.sh
 conda activate /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib
 
 which python
