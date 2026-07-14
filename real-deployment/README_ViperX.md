@@ -163,9 +163,8 @@ validate_viperx_model=PASS
 
 ## URDF Mapping
 
-This section aligns real ViperX raw encoder ticks with the validated URDF joint
-radians used by `viperx_model.py`. This is an adapter/config mapping step, not
-a URDF edit and not a Dynamixel calibration rewrite.
+This is the Stage 4 lab runbook for aligning real ViperX raw encoder ticks with
+the validated URDF joint radians used by `viperx_model.py`.
 
 Mapping formula:
 
@@ -173,437 +172,241 @@ Mapping formula:
 q_urdf = q_home_urdf + sign * (raw - raw_home) * scale_rad_per_tick
 ```
 
-The generated mapping is saved by default to:
+The result is stored in the adapter/config layer:
 
 ```text
-Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
+/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
 ```
 
-### Environment
+This procedure does not change URDF `q=0`, Dynamixel `Homing_Offset` or
+`Drive_Mode`, or LeRobot calibration to fit the URDF. It reads raw
+`Present_Position` values; LeRobot normalized `.pos` values are not radians and
+are not used as URDF joint values.
 
-Do not use `re3sim-ros-xacro` . That environment is for offline URDF
-and FK/IK validation only. Mapping needs the LeRobot environment that can
-connect to the real ViperX.
+The leader/follower types, IDs, and lab device names below follow
+`/home/yuzzhu/Projects/Re3Sim_ViperX/lerobot/README-SL.md`.
 
-Use your existing working LeRobot/ViperX environment if it can already run
-LeRobot calibration and connect to the arm. Otherwise create a dedicated
-environment for Stage 4:
+### 1. Enter the Lab Project and Environment
+
+The repository stays in the backed-up NFS home:
 
 ```bash
-cd /home/kienzhu/Projects/Re3Sim_ViperX
-
-mamba create -n re3sim-viperx-calib python=3.11
-mamba activate re3sim-viperx-calib
-
-which python
-python -m pip -V
-
-python -m pip install --upgrade pip
-python -m pip install -e ./lerobot
-python -m pip install pybullet roboticstoolbox-python spatialmath-python
-
-python -c "import lerobot, draccus, pybullet, roboticstoolbox, spatialmath; print('stage4 env ok')"
+cd /home/yuzzhu/Projects/Re3Sim_ViperX
 ```
 
-`python -m pip install -e ./lerobot` is environment-local. It installs into the
-currently active Python environment shown by `which python` and
-`python -m pip -V`. Do not run it from `base` unless you intentionally want to
-install LeRobot into `base`.
-
-That command reads:
-
-```text
-lerobot/pyproject.toml
-```
-
-It installs:
-
-- The local LeRobot package in editable mode.
-- LeRobot command line entries such as `lerobot-calibrate`, `lerobot-find-port`, and `lerobot-teleoperate`.
-- LeRobot base dependencies declared in `[project].dependencies`.
-- ViperX hardware-side dependencies already declared by LeRobot, including `draccus`, `dynamixel-sdk`, `pyserial`, and `trossen_arm`.
-
-It does not install:
-
-- LeRobot optional extras such as `intelrealsense`, `kinematics`, `dev`, `test`, or `all`.
-- Stage 4 model/GUI dependencies `pybullet`, `roboticstoolbox-python`, and `spatialmath-python`.
-- OS-level USB permissions, udev rules, RealSense firmware/drivers, or serial-port access.
-- Re3Sim/Isaac Sim/Docker dependencies.
-
-If wrist camera or RealSense scripts are needed later, install the optional
-camera extra in the same active environment:
+The Python environment and package cache stay on the local `/data` disk. If the
+environment already exists, activate it directly:
 
 ```bash
-python -m pip install -e "./lerobot[intelrealsense]"
-```
+mamba activate /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib
 
-A fresh Stage 4 environment must provide at least:
-
-```text
-LeRobot local fork and its hardware dependencies
-draccus
-pybullet
-numpy
-roboticstoolbox-python
-spatialmath-python
-```
-
-The Stage 4 scripts do not manually inject `lerobot/src` into `sys.path`.
-LeRobot must be importable from the active Python environment through the
-editable install above. The scripts only add this directory internally so they
-can import the local `viperx_model.py`:
-
-```text
-/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment
-```
-
-### Local Robot Settings
-
-The lab LeRobot note `lerobot/README-SL.md` uses these ViperX values:
-
-```text
-port=/dev/ttyDXL_follower_left
-robot.id=left_follower
-calibration_dir=/data/sichao/.local/huggingface/lerobot/calibration/robots/viperx
-```
-
-For this project, the commands below store LeRobot calibration under the
-project tree:
-
-```text
-robot.port=/dev/ttyDXL_follower_left
-robot.id=left_follower
-robot.calibration_dir=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx
-mapping=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
-```
-
-If the lab machine does not have `/dev/ttyDXL_follower_left`, run:
-
-```bash
-lerobot-find-port
-```
-
-and replace `/dev/ttyDXL_follower_left` in the commands with the detected port,
-for example `/dev/ttyUSB0`.
-
-LeRobot saves robot calibration to:
-
-```text
-<calibration_dir>/<robot.id>.json
-```
-
-With the project-local calibration directory above, the ViperX calibration file is:
-
-```text
-/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx/left_follower.json
-```
-
-This local calibration file is the LeRobot motor calibration. The URDF mapping
-file is separate and remains:
-
-```text
-/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
-```
-
-When leaving the lab environment:
-
-```bash
-mamba deactivate
-```
-
-### Lab Command Checklist
-
-Use this as the command-level order at the robot.
-
-1. Enter the Stage 4 environment:
-
-```bash
-cd /home/kienzhu/Projects/Re3Sim_ViperX
-mamba activate re3sim-viperx-calib
 which python
 python -m pip -V
 ```
 
-2. If the environment is new, install dependencies:
+`which python` should print:
+
+```text
+/data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python
+```
+
+Only if the environment does not exist yet, create and install it:
 
 ```bash
-python -m pip install --upgrade pip
-python -m pip install -e ./lerobot
-python -m pip install pybullet roboticstoolbox-python spatialmath-python
+mkdir -p /data/yuzzhu/Re3Sim_ViperX/envs
+mkdir -p /data/yuzzhu/Re3Sim_ViperX/cache/pip
+
+mamba create -p /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib python=3.11
+mamba activate /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib
+
+python -m pip install --cache-dir /data/yuzzhu/Re3Sim_ViperX/cache/pip -e /home/yuzzhu/Projects/Re3Sim_ViperX/lerobot
+python -m pip install --cache-dir /data/yuzzhu/Re3Sim_ViperX/cache/pip draccus pybullet roboticstoolbox-python spatialmath-python
+
+which python
+python -m pip -V
 python -c "import lerobot, draccus, pybullet, roboticstoolbox, spatialmath; print('stage4 env ok')"
 ```
 
-3. Find or confirm the robot port:
+Do not use `sudo`. After activation, use normal `python`, `python -m pip`, and
+`lerobot-*` commands; there is no need to repeat the environment's full Python
+path.
+
+### 2. Confirm the Leader and Follower Ports
+
+First check the lab aliases:
 
 ```bash
-lerobot-find-port
+ls -l /dev/ttyDXL_follower_left /dev/ttyDXL_leader_left
 ```
 
-Replace `/dev/ttyDXL_follower_left` in the commands if this symlink is not
-available on the lab machine.
+The commands below assume:
 
-4. If you intentionally want to rerun LeRobot calibration:
+```text
+follower ViperX: /dev/ttyDXL_follower_left
+leader WidowX:   /dev/ttyDXL_leader_left
+```
+
+If an alias is absent, run `lerobot-find-port` and replace that alias in the
+later commands with the detected absolute device path, such as
+`/dev/ttyUSB0`.
+
+### 3. Calibrate Leader and Follower in One Run
+
+This command uses the lab pairing from `lerobot/README-SL.md` and calibrates
+both sides during the same `lerobot-teleoperate` startup:
 
 ```bash
-lerobot-calibrate \
+lerobot-teleoperate \
   --robot.type=viperx \
   --robot.port=/dev/ttyDXL_follower_left \
   --robot.id=left_follower \
-  --robot.calibration_dir=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx
+  --robot.calibration_dir=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
+  --teleop.type=widowx \
+  --teleop.port=/dev/ttyDXL_leader_left \
+  --teleop.id=left_leader \
+  --teleop.calibration_dir=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/teleoperators/widowx \
+  --display_data=false
 ```
 
-This is LeRobot's own motor calibration step. It is separate from the URDF
-mapping below. The URDF mapping does not edit LeRobot calibration files.
+Follow the terminal prompts for the leader and follower calibration. LeRobot
+creates the calibration directories automatically. Calibration on each side is
+controlled by the existence of its exact JSON file:
 
-5. Create the URDF mapping:
+```text
+/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx/left_follower.json
+/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/teleoperators/widowx/left_leader.json
+```
+
+- If a file is absent, that side enters calibration and saves the file.
+- If a file already exists, that side loads it and skips calibration.
+- With both files absent, this single command calibrates leader and follower.
+- After both sides connect, the command enters teleoperation. Check the pairing,
+  then press `Ctrl+C` when finished.
+
+The following URDF mapping steps use only `left_follower.json`. The leader
+calibration remains available for later teleoperation.
+
+### 4. Create the URDF Mapping
+
+Keep the follower supported while moving it by hand. Run:
 
 ```bash
-python Re3Sim/real-deployment/utils/create_viperx_urdf_mapping.py \
+python /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/create_viperx_urdf_mapping.py \
   --robot.type=viperx \
   --robot.port=/dev/ttyDXL_follower_left \
   --robot.id=left_follower \
-  --robot.calibration_dir=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
-  --output=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
+  --robot.calibration_dir=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
+  --output=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
 ```
 
-6. Validate the saved mapping offline:
+Interactive sequence:
+
+1. Confirm the hardware prompt in the terminal.
+2. In the PyBullet GUI, use the six sliders to set a safe and reproducible URDF
+   home pose.
+3. Support the real follower and move it to the same pose.
+4. Return to the terminal and press `Enter`.
+5. Keep supporting the arm until the terminal prints `raw_home=...`.
+6. After `raw_home` is printed, return the arm to a stable supported position.
+7. Wait for the script to save `viperx_urdf_mapping.json`.
+
+If the mapping file already exists and you intentionally want to replace it,
+rerun the same command with:
+
+```text
+--overwrite=true
+```
+
+The script obtains the initial signs from the follower LeRobot calibration. It
+does not send `Goal_Position`.
+
+### 5. Validate the Mapping Offline
+
+This step does not connect to hardware:
 
 ```bash
-python Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
-  --mapping=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
+python /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
+  --mapping=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
 ```
 
-7. Validate live raw encoder reading without sending motor goals:
-
-```bash
-python Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
-  --live=true \
-  --gui=true \
-  --robot.type=viperx \
-  --robot.port=/dev/ttyDXL_follower_left \
-  --robot.id=left_follower \
-  --robot.calibration_dir=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
-  --mapping=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
-```
-
-8. Leave the environment:
-
-```bash
-mamba deactivate
-```
-
-The Stage 4 acceptance marker is:
+Required result:
 
 ```text
 validate_viperx_urdf_mapping=PASS
 ```
 
-### Create Mapping
+### 6. Validate Several Live Poses in PyBullet
 
-Script:
-
-```text
-Re3Sim/real-deployment/utils/create_viperx_urdf_mapping.py
-```
-
-Responsibility:
-
-- Parse a LeRobot-style `ViperXConfig` with `draccus`.
-- Load the validated full URDF through `viperx_model.py`.
-- Open PyBullet GUI and let the user choose the URDF home pose with sliders.
-- Open the LeRobot Dynamixel bus directly.
-- Disable torque by default so the real arm can be moved by hand.
-- Read `raw_home` from `Present_Position` with `normalize=False`.
-- Read initial `sign` from the loaded LeRobot calibration `drive_mode`.
-- Save `q_home_urdf`, `raw_home`, `sign`, encoder scale, raw safe range, and URDF limits.
-- Never send `Goal_Position`.
-- Never edit Dynamixel `Homing_Offset`, `Drive_Mode`, or LeRobot calibration files.
-
-Typical command:
+Run:
 
 ```bash
-cd /home/kienzhu/Projects/Re3Sim_ViperX
-mamba activate <your-lerobot-viperx-env>
-
-python Re3Sim/real-deployment/utils/create_viperx_urdf_mapping.py \
-  --robot.type=viperx \
-  --robot.port=/dev/ttyDXL_follower_left \
-  --robot.id=left_follower \
-  --robot.calibration_dir=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
-  --output=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
-```
-
-If the output file already exists and you want to replace it:
-
-```bash
-python Re3Sim/real-deployment/utils/create_viperx_urdf_mapping.py \
-  --robot.type=viperx \
-  --robot.port=/dev/ttyDXL_follower_left \
-  --robot.id=left_follower \
-  --robot.calibration_dir=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
-  --output=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json \
-  --overwrite=true
-```
-
-Interactive flow:
-
-- The script asks for confirmation before touching the hardware bus.
-- PyBullet GUI opens with six sliders for the arm joints.
-- Move the PyBullet sliders to the chosen URDF home pose.
-- Move the real arm by hand to the matching physical pose.
-- Return to the terminal and press `ENTER`.
-- Keep supporting the arm until the terminal prints `raw_home=...`; after that raw snapshot is recorded.
-- Place the real arm back on a stable support before inspecting the rest of the output.
-- The script uses LeRobot calibration `drive_mode` to fill the initial `sign`.
-- The mapping JSON is written after all checks pass.
-
-Optional non-interactive sign input after signs are known:
-
-```bash
-python Re3Sim/real-deployment/utils/create_viperx_urdf_mapping.py \
-  --robot.type=viperx \
-  --robot.port=/dev/ttyDXL_follower_left \
-  --robot.id=left_follower \
-  --robot.calibration_dir=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
-  --output=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json \
-  --signs=1,-1,1,1,-1,1 \
-  --overwrite=true
-```
-
-The `--signs` order is always:
-
-```text
-waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate
-```
-
-### Validate Mapping
-
-Script:
-
-```text
-Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py
-```
-
-Responsibility:
-
-- Load `viperx_urdf_mapping.json`.
-- Check the mapping schema and six-joint order.
-- Verify `raw_home` maps back exactly to `q_home_urdf`.
-- Check `raw_home` against saved LeRobot calibration safe ranges.
-- Check `q_home_urdf` against saved URDF limits.
-- Run FK through `viperx_model.py` and print `T_base_ee`.
-- In `live=true` mode, connect to the LeRobot bus and read current raw encoders only.
-- Convert live raw encoders to `q_urdf`, check limits, and print live FK.
-- Never send `Goal_Position`.
-- Never edit Dynamixel or LeRobot calibration state.
-
-Offline validation, no hardware:
-
-```bash
-cd /home/kienzhu/Projects/Re3Sim_ViperX
-mamba activate <your-lerobot-viperx-env>
-
-python Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
-  --mapping=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
-```
-
-Live read-only validation:
-
-```bash
-cd /home/kienzhu/Projects/Re3Sim_ViperX
-mamba activate <your-lerobot-viperx-env>
-
-python Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
-  --live=true \
-  --robot.type=viperx \
-  --robot.port=/dev/ttyDXL_follower_left \
-  --robot.id=left_follower \
-  --robot.calibration_dir=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
-  --mapping=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
-```
-
-Live GUI pose validation:
-
-```bash
-cd /home/kienzhu/Projects/Re3Sim_ViperX
-mamba activate <your-lerobot-viperx-env>
-
-python Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
+python /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
   --live=true \
   --gui=true \
   --robot.type=viperx \
   --robot.port=/dev/ttyDXL_follower_left \
   --robot.id=left_follower \
-  --robot.calibration_dir=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
-  --mapping=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
+  --robot.calibration_dir=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
+  --mapping=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
 ```
 
-For `--gui=true`, the script disables torque by default, asks you to hold a
-real validation pose, then reads raw encoders after `ENTER`. Keep supporting the
-arm until `live_raw=...` is printed or the PyBullet GUI opens. After that, the
-snapshot has been captured; place the real arm back on a stable support and
-compare the PyBullet pose with the pose you just held. Repeat this command for
-several different safe poses.
+For each run:
 
-Optional sign verification and correction:
+1. The script connects to the follower and disables torque by default.
+2. Support the follower and move it to a safe validation pose.
+3. Return to the terminal and press `Enter`.
+4. Keep supporting it until `live_raw=...` is printed or the PyBullet GUI
+   opens; the raw snapshot has then been recorded.
+5. Return the real arm to a stable supported position.
+6. Compare the PyBullet pose with the real pose that was just recorded.
+7. Return to the terminal and press `Enter` to close PyBullet.
+
+Repeat the command for several distinct safe poses. Each run must end with:
+
+```text
+validate_viperx_urdf_mapping=PASS
+```
+
+### 7. Verify All Six Joint Signs
+
+After the multi-pose GUI check, verify the URDF-positive direction one joint at
+a time:
 
 ```bash
-python Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
+python /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
   --live=true \
   --verify_signs=true \
   --robot.type=viperx \
   --robot.port=/dev/ttyDXL_follower_left \
   --robot.id=left_follower \
-  --robot.calibration_dir=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
-  --mapping=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
+  --robot.calibration_dir=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
+  --mapping=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
 ```
 
-Use this only if GUI pose validation suggests one or more joint directions are
-wrong, or if you explicitly want to check URDF-positive direction joint by
-joint.
+Follow the terminal prompts and support the arm throughout the manual joint
+movement. If an observed direction disagrees with the mapping, the script asks
+for confirmation before changing only the `sign` in the mapping JSON. It does
+not modify the URDF, Dynamixel configuration, or LeRobot calibration.
 
-Use `--yes=true` only when you intentionally want to skip the read-only live
-confirmation prompt:
+If any sign changes, rerun the offline check and the live GUI checks.
+
+### 8. Acceptance
+
+Stage 4 is accepted when:
+
+- The environment import command prints `stage4 env ok`.
+- Both `left_leader.json` and `left_follower.json` exist at the paths above.
+- `viperx_urdf_mapping.json` is created in the project config directory.
+- Offline validation prints `validate_viperx_urdf_mapping=PASS`.
+- Several live GUI poses match the corresponding real follower poses.
+- All six joint signs have been checked.
+- Any sign correction is followed by another offline and live GUI validation.
+
+When finished:
 
 ```bash
-python Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
-  --live=true \
-  --yes=true \
-  --robot.type=viperx \
-  --robot.port=/dev/ttyDXL_follower_left \
-  --robot.id=left_follower \
-  --robot.calibration_dir=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
-  --mapping=/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
+mamba deactivate
 ```
-
-Expected pass marker:
-
-```text
-validate_viperx_urdf_mapping=PASS
-```
-
-Validation output includes:
-
-```text
-home_q_urdf=(...)
-home_ee_xyz=(...)
-home_T_base_ee=
-live_raw={...}          # only in live=true mode
-live_q_urdf=(...)       # only in live=true mode
-live_ee_xyz=(...)       # only in live=true mode
-```
-
-### Acceptance
-
-Accept Stage 4 only after:
-
-- `create_viperx_urdf_mapping.py` writes a mapping JSON for the real robot.
-- Offline `validate_viperx_urdf_mapping.py` passes on that JSON.
-- Live `validate_viperx_urdf_mapping.py --live=true` reads real raw encoders and passes.
-- Live GUI `validate_viperx_urdf_mapping.py --live=true --gui=true` matches the real arm pose for several safe poses.
-- The printed `q_urdf` values are plausible for the real arm pose.
-- The printed FK `T_base_ee` is plausible for the real arm pose.
-- The mapping JSON is treated as the adapter/config source of truth for raw encoder to URDF radians.
 
 ## Boundary
 
