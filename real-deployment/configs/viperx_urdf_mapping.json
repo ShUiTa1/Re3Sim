@@ -1,0 +1,127 @@
+{
+  "base_link": "vx300s/base_link",
+  "created_at": "2026-07-15T14:00:52.531918+00:00",
+  "encoder_resolution": {
+    "elbow": 4096,
+    "forearm_roll": 4096,
+    "shoulder": 4096,
+    "waist": 4096,
+    "wrist_angle": 4096,
+    "wrist_rotate": 4096
+  },
+  "end_link": "vx300s/ee_gripper_link",
+  "joint_order": [
+    "waist",
+    "shoulder",
+    "elbow",
+    "forearm_roll",
+    "wrist_angle",
+    "wrist_rotate"
+  ],
+  "lerobot": {
+    "calibration_dir": "/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx",
+    "calibration_file": "/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx/left_follower.json",
+    "port": "/dev/ttyDXL_follower_left",
+    "robot_id": "left_follower"
+  },
+  "mapping_mode": "home_anchor",
+  "q_home_urdf": {
+    "elbow": 0.0,
+    "forearm_roll": 0.0,
+    "shoulder": 0.0,
+    "waist": 0.0,
+    "wrist_angle": 0.0,
+    "wrist_rotate": 0.0
+  },
+  "raw_home": {
+    "elbow": 2373,
+    "forearm_roll": 2076,
+    "shoulder": 1965,
+    "waist": 2049,
+    "wrist_angle": 2166,
+    "wrist_rotate": 2160
+  },
+  "safe_raw_range": {
+    "elbow": {
+      "max": 3433,
+      "min": 1055
+    },
+    "forearm_roll": {
+      "max": 4095,
+      "min": 0
+    },
+    "shoulder": {
+      "max": 2773,
+      "min": 737
+    },
+    "waist": {
+      "max": 4095,
+      "min": 0
+    },
+    "wrist_angle": {
+      "max": 3597,
+      "min": 1237
+    },
+    "wrist_rotate": {
+      "max": 4095,
+      "min": 0
+    }
+  },
+  "safety": {
+    "disables_torque": true,
+    "reenables_torque_on_exit": false,
+    "writes_dynamixel_drive_mode": false,
+    "writes_dynamixel_homing_offset": false,
+    "writes_goal_position": false,
+    "writes_lerobot_calibration": false
+  },
+  "scale_rad_per_tick": {
+    "elbow": 0.0015339807878856412,
+    "forearm_roll": 0.0015339807878856412,
+    "shoulder": 0.0015339807878856412,
+    "waist": 0.0015339807878856412,
+    "wrist_angle": 0.0015339807878856412,
+    "wrist_rotate": 0.0015339807878856412
+  },
+  "schema_version": 1,
+  "sign": {
+    "elbow": 1,
+    "forearm_roll": 1,
+    "shoulder": 1,
+    "waist": 1,
+    "wrist_angle": 1,
+    "wrist_rotate": 1
+  },
+  "source": {
+    "home": "manual PyBullet GUI home-anchor",
+    "note": "",
+    "sign": "LeRobot calibration drive_mode direction bit"
+  },
+  "urdf_limit": {
+    "elbow": {
+      "lower": -1.7627825445142729,
+      "upper": 1.6057029118347832
+    },
+    "forearm_roll": {
+      "lower": -3.141582653589793,
+      "upper": 3.141582653589793
+    },
+    "shoulder": {
+      "lower": -1.8500490071139892,
+      "upper": 1.2566370614359172
+    },
+    "waist": {
+      "lower": -3.141582653589793,
+      "upper": 3.141582653589793
+    },
+    "wrist_angle": {
+      "lower": -1.8675022996339325,
+      "upper": 2.234021442552742
+    },
+    "wrist_rotate": {
+      "lower": -3.141582653589793,
+      "upper": 3.141582653589793
+    }
+  },
+  "urdf_path": "/home/yuzzhu/Projects/Re3Sim_ViperX/viperx_asset/urdf/vx300s_full.urdf"
+}

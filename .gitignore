@@ -32,7 +32,6 @@ real2sim2real.egg-info/
 *.bmp
 *.tiff
 *.ico
-*.json
 tests/
 resources/
 draw_pictures/draw_pictures/visual_comparsion/2024-11-11_13-56-18_972230

@@ -1,0 +1,65 @@
+{
+    "waist": {
+        "id": 1,
+        "drive_mode": 0,
+        "homing_offset": -7,
+        "range_min": 0,
+        "range_max": 4095
+    },
+    "shoulder": {
+        "id": 2,
+        "drive_mode": 1,
+        "homing_offset": 70,
+        "range_min": 737,
+        "range_max": 2773
+    },
+    "shoulder_shadow": {
+        "id": 3,
+        "drive_mode": 0,
+        "homing_offset": 76,
+        "range_min": 875,
+        "range_max": 2914
+    },
+    "elbow": {
+        "id": 4,
+        "drive_mode": 1,
+        "homing_offset": -192,
+        "range_min": 1055,
+        "range_max": 3433
+    },
+    "elbow_shadow": {
+        "id": 5,
+        "drive_mode": 0,
+        "homing_offset": -60,
+        "range_min": 670,
+        "range_max": 3049
+    },
+    "forearm_roll": {
+        "id": 6,
+        "drive_mode": 0,
+        "homing_offset": 47,
+        "range_min": 0,
+        "range_max": 4095
+    },
+    "wrist_angle": {
+        "id": 7,
+        "drive_mode": 1,
+        "homing_offset": -92,
+        "range_min": 1237,
+        "range_max": 3597
+    },
+    "wrist_rotate": {
+        "id": 8,
+        "drive_mode": 0,
+        "homing_offset": -326,
+        "range_min": 0,
+        "range_max": 4095
+    },
+    "gripper": {
+        "id": 9,
+        "drive_mode": 0,
+        "homing_offset": -344,
+        "range_min": 889,
+        "range_max": 2053
+    }
+}
