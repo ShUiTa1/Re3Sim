@@ -18,7 +18,6 @@ Safety boundary:
 - disables torque by default so the arm can be moved by hand.
 """
 
-from __future__ import annotations
 
 import json
 import select

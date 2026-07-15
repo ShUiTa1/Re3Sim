@@ -8,8 +8,6 @@ optionally write corrected signs back to the mapping JSON. Add ``gui=true`` to
 capture a manually held live pose and show the converted URDF pose in PyBullet.
 """
 
-from __future__ import annotations
-
 import json
 import sys
 from dataclasses import dataclass
