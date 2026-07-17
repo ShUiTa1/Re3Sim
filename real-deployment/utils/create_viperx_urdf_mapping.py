@@ -6,10 +6,12 @@ Interactive flow:
 2. Open the validated full ViperX URDF in PyBullet GUI.
 3. Open the LeRobot Dynamixel bus directly and disable torque by default.
 4. Let the user match the PyBullet home pose and the real arm pose.
-5. Read ``q_home_urdf`` from PyBullet sliders and ``raw_home`` from raw encoders.
-6. Use LeRobot calibration ``drive_mode`` to derive per-joint signs, unless
-   ``--signs=...`` is supplied as an explicit override.
-7. Save an adapter-layer mapping JSON.
+5. Read ``q_home_urdf`` from PyBullet sliders and eight arm-actuator
+   ``raw_home`` values from raw encoders.
+6. Apply the three URDF signs already validated for this ViperX model, unless
+   ``--signs=...`` is supplied as an explicit six-joint override.
+7. Read one additional safe physical pose to infer the two shadow-motor signs.
+8. Save an adapter-layer mapping JSON.
 
 Safety boundary:
 - sends no ``Goal_Position``;
@@ -49,6 +51,22 @@ from viperx_model import DEFAULT_ARM_JOINT_NAMES, DEFAULT_URDF_PATH, load_viperx
 
 
 NON_KINEMATIC_MOTORS = frozenset({"shoulder_shadow", "elbow_shadow", "gripper"})
+ARM_ACTUATOR_NAMES = (
+    "waist",
+    "shoulder",
+    "shoulder_shadow",
+    "elbow",
+    "elbow_shadow",
+    "forearm_roll",
+    "wrist_angle",
+    "wrist_rotate",
+)
+SHADOW_TO_JOINT = {
+    "shoulder_shadow": "shoulder",
+    "elbow_shadow": "elbow",
+}
+VALIDATED_URDF_SIGN_FLIPS = frozenset({"shoulder", "elbow", "wrist_angle"})
+MIN_SHADOW_SIGN_DELTA_TICKS = 20
 
 
 @dataclass
@@ -148,6 +166,18 @@ def discover_arm_joint_names(robot: Any) -> tuple[str, ...]:
     return arm_joint_names
 
 
+def discover_arm_actuator_names(robot: Any) -> tuple[str, ...]:
+    """Return the six main and two shadow arm actuators in bus order."""
+
+    actuator_names = tuple(name for name in robot.bus.motors if name != "gripper")
+    if actuator_names != ARM_ACTUATOR_NAMES:
+        raise ValueError(
+            f"Unexpected arm actuator order {actuator_names}; "
+            f"expected {ARM_ACTUATOR_NAMES}."
+        )
+    return actuator_names
+
+
 def calibration_value(calibration: Any, field_name: str) -> Any:
     """Read a calibration field from either a dict or dataclass-like object."""
 
@@ -202,6 +232,44 @@ def read_calibration_drive_mode_signs(
         # Dynamixel Drive_Mode bit 0 is the direction bit.
         signs[joint] = -1 if drive_mode & 0x01 else 1
     return signs
+
+
+def apply_validated_urdf_sign_flips(signs: Mapping[str, int]) -> dict[str, int]:
+    """Apply the three Stage-4 sign flips validated against PyBullet."""
+
+    missing = VALIDATED_URDF_SIGN_FLIPS - set(signs)
+    if missing:
+        raise KeyError(f"Cannot apply validated URDF sign flips; missing {sorted(missing)}.")
+    corrected = {name: int(value) for name, value in signs.items()}
+    if any(value not in (-1, 1) for value in corrected.values()):
+        raise ValueError(f"Mapping signs must be +1 or -1: {corrected}")
+    for joint in VALIDATED_URDF_SIGN_FLIPS:
+        corrected[joint] *= -1
+    return corrected
+
+
+def infer_shadow_signs(
+    raw_home: Mapping[str, int],
+    raw_sample: Mapping[str, int],
+    main_signs: Mapping[str, int],
+    *,
+    min_delta_ticks: int = MIN_SHADOW_SIGN_DELTA_TICKS,
+) -> dict[str, int]:
+    """Infer shadow signs from one additional torque-off physical pose."""
+
+    shadow_signs: dict[str, int] = {}
+    for shadow, joint in SHADOW_TO_JOINT.items():
+        main_delta = int(raw_sample[joint]) - int(raw_home[joint])
+        shadow_delta = int(raw_sample[shadow]) - int(raw_home[shadow])
+        if abs(main_delta) < min_delta_ticks or abs(shadow_delta) < min_delta_ticks:
+            raise ValueError(
+                f"Move {joint} farther before recording the shadow sign sample: "
+                f"{joint}_delta={main_delta}, {shadow}_delta={shadow_delta}, "
+                f"required_abs_delta>={min_delta_ticks}."
+            )
+        relative_sign = 1 if main_delta * shadow_delta > 0 else -1
+        shadow_signs[shadow] = int(main_signs[joint]) * relative_sign
+    return shadow_signs
 
 
 def read_encoder_scales(
@@ -402,6 +470,38 @@ def wait_for_home_anchor(
         time.sleep(1.0 / 240.0)
 
 
+def wait_for_shadow_sign_sample(
+    session: RawEncoderSession,
+    actuator_names: Sequence[str],
+    raw_home: Mapping[str, int],
+    main_signs: Mapping[str, int],
+) -> dict[str, int]:
+    """Read a second physical pose and infer the two shadow actuator signs."""
+
+    print("\nShadow-sign sample (this is not another home anchor):")
+    print("1. Keep supporting the real arm; torque remains disabled.")
+    print("2. Move to any other safe pose where shoulder and elbow both change.")
+    print("3. Do not move either joint through an encoder wrap.")
+    print("4. Press ENTER to read one temporary raw snapshot.")
+    while True:
+        input("Press ENTER when the second safe physical pose is ready: ")
+        raw_sample = session.read_raw_joints(actuator_names)
+        try:
+            shadow_signs = infer_shadow_signs(raw_home, raw_sample, main_signs)
+        except ValueError as exc:
+            print(f"shadow_sign_sample=RETRY: {exc}")
+            continue
+        print(f"shadow_sign_sample_raw={raw_sample}")
+        for shadow, joint in SHADOW_TO_JOINT.items():
+            main_delta = raw_sample[joint] - raw_home[joint]
+            shadow_delta = raw_sample[shadow] - raw_home[shadow]
+            print(
+                f"{shadow}: {joint}_delta={main_delta}, "
+                f"shadow_delta={shadow_delta}, sign={shadow_signs[shadow]:+d}"
+            )
+        return shadow_signs
+
+
 def named_float_dict(
     joint_names: Sequence[str],
     values: Sequence[float],
@@ -433,6 +533,7 @@ def build_mapping(
     resolutions: dict[str, int],
     scales: dict[str, float],
     safe_raw_range: dict[str, dict[str, int]],
+    shadow_mapping: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     """Assemble the final home-anchor mapping JSON payload."""
 
@@ -460,6 +561,7 @@ def build_mapping(
         "encoder_resolution": resolutions,
         "scale_rad_per_tick": scales,
         "safe_raw_range": safe_raw_range,
+        "shadow_mapping": shadow_mapping,
         "urdf_limit": urdf_limit,
         "lerobot": {
             "robot_id": robot_config.id,
@@ -470,6 +572,7 @@ def build_mapping(
         "source": {
             "home": cfg.home_source,
             "sign": sign_source,
+            "shadow_sign": "second torque-off physical pose raw delta",
             "note": cfg.note,
         },
         "safety": {
@@ -507,8 +610,12 @@ def main(cfg: CreateViperXUrdfMappingConfig) -> None:
     )
     robot = make_lerobot_viperx(cfg)
     joint_names = discover_arm_joint_names(robot)
-    safe_raw_range = read_calibration_ranges(robot, joint_names)
-    resolutions, scales = read_encoder_scales(robot, joint_names)
+    actuator_names = discover_arm_actuator_names(robot)
+    actuator_safe_raw_range = read_calibration_ranges(robot, actuator_names)
+    actuator_resolutions, actuator_scales = read_encoder_scales(robot, actuator_names)
+    safe_raw_range = {joint: actuator_safe_raw_range[joint] for joint in joint_names}
+    resolutions = {joint: actuator_resolutions[joint] for joint in joint_names}
+    scales = {joint: actuator_scales[joint] for joint in joint_names}
 
     selector: PyBulletHomeSelector | None = None
     try:
@@ -521,20 +628,43 @@ def main(cfg: CreateViperXUrdfMappingConfig) -> None:
             q_home_urdf = wait_for_home_anchor(selector, joint_names)
             model.validate_joints(q_home_urdf)
 
-            raw_home = session.read_raw_joints(joint_names)
-            validate_raw_ranges(raw_home, safe_raw_range)
-            print(f"raw_home={raw_home}")
+            actuator_raw_home = session.read_raw_joints(actuator_names)
+            validate_raw_ranges(actuator_raw_home, actuator_safe_raw_range)
+            print(f"raw_home={actuator_raw_home}")
+            raw_home = {joint: actuator_raw_home[joint] for joint in joint_names}
 
             if cfg.signs:
                 sign_values = parse_six_sign_list(cfg.signs)
                 signs = named_int_dict(joint_names, sign_values)
                 sign_source = "manual CLI --signs override"
             else:
-                signs = read_calibration_drive_mode_signs(robot, joint_names)
-                sign_source = "LeRobot calibration drive_mode direction bit"
+                drive_mode_signs = read_calibration_drive_mode_signs(robot, joint_names)
+                signs = apply_validated_urdf_sign_flips(drive_mode_signs)
+                sign_source = (
+                    "LeRobot calibration drive_mode with validated URDF sign flips: "
+                    "shoulder, elbow, wrist_angle"
+                )
             print(f"signs={signs}")
+            shadow_signs = wait_for_shadow_sign_sample(
+                session,
+                actuator_names,
+                actuator_raw_home,
+                signs,
+            )
     finally:
         close_pybullet_home_selector(selector)
+
+    shadow_mapping = {
+        shadow: {
+            "joint": joint,
+            "raw_home": actuator_raw_home[shadow],
+            "sign": shadow_signs[shadow],
+            "encoder_resolution": actuator_resolutions[shadow],
+            "scale_rad_per_tick": actuator_scales[shadow],
+            "safe_raw_range": actuator_safe_raw_range[shadow],
+        }
+        for shadow, joint in SHADOW_TO_JOINT.items()
+    }
 
     mapping = build_mapping(
         cfg=cfg,
@@ -548,6 +678,7 @@ def main(cfg: CreateViperXUrdfMappingConfig) -> None:
         resolutions=resolutions,
         scales=scales,
         safe_raw_range=safe_raw_range,
+        shadow_mapping=shadow_mapping,
     )
     save_mapping(mapping, cfg.output, overwrite=cfg.overwrite)
 

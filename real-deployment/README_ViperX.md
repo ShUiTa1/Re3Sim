@@ -335,9 +335,16 @@ Interactive sequence:
    home pose.
 3. Support the real follower and move it to the same pose.
 4. Return to the terminal and press `Enter`.
-5. Keep supporting the arm until the terminal prints `raw_home=...`.
-6. After `raw_home` is printed, return the arm to a stable supported position.
-7. Wait for the script to save `viperx_urdf_mapping.json`.
+5. Keep supporting the arm until the terminal prints `raw_home=...`; this
+   snapshot contains the six main arm actuators and the two shadow actuators.
+6. Move the real arm to any other safe pose where both `shoulder` and `elbow`
+   change. This is only a temporary shadow-sign sample; do not change the
+   PyBullet home pose.
+7. Press `Enter` again. If either paired joint moved too little, follow the
+   terminal prompt and retry with a larger safe change.
+8. Keep supporting the arm until both inferred shadow signs are printed, then
+   return it to a stable supported position.
+9. Wait for the script to save `viperx_urdf_mapping.json`.
 
 If the mapping file already exists and you intentionally want to replace it,
 rerun the same command with:
@@ -346,8 +353,12 @@ rerun the same command with:
 --overwrite=true
 ```
 
-The script obtains the initial signs from the follower LeRobot calibration. It
-does not send `Goal_Position`.
+For the six kinematic joints, the script applies the already validated URDF
+sign flips for `shoulder`, `elbow`, and `wrist_angle` to the initial LeRobot
+`drive_mode` signs. It infers the two shadow signs from the temporary second
+pose. The original six-joint mapping fields remain unchanged; the two shadow
+anchors are stored separately under `shadow_mapping`. The script does not send
+`Goal_Position`.
 
 ### 5. Validate the Mapping Offline
 
