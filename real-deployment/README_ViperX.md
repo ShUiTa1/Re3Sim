@@ -423,15 +423,183 @@ When finished:
 conda deactivate
 ```
 
+## ViperX Adapter Live Validation
+
+This Stage 5 procedure validates the accepted Stage 4 mapping through the
+`ViperXAdapter` command path. It performs a live
+`home -> shoulder left 90 degrees -> base XZ heart -> home` motion and then
+checks the operator stop, hold, torque-release, and reconnect behavior.
+
+The default heart is approximately 8 cm wide. This procedure sends real
+`Goal_Position` commands. Keep the robot within reach, clear the complete
+motion volume, and do not run it unattended.
+
+Do not consider Stage 5 accepted until both the normal live run and the
+intentional interruption run below have been completed, followed by a
+successful reconnect.
+
+### 1. Enter the Lab Project and Environment
+
+Open a new terminal and run:
+
+```bash
+cd /home/yuzzhu/Projects/Re3Sim_ViperX
+source /data/yuzzhu/Re3Sim_ViperX/tools/miniforge3/etc/profile.d/conda.sh
+conda activate /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib
+```
+
+The `source` command is required once in each new terminal or SSH session
+before the first Conda command. It does not modify `~/.bashrc` and does not
+require `conda init`.
+
+### 2. Prepare the Robot and Workspace
+
+Before running the script:
+
+1. Check that the accepted Stage 4 mapping exists at
+   `/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json`.
+2. Confirm that `/dev/ttyDXL_follower_left` still points to the follower
+   ViperX.
+3. Clear people, tools, cables, cameras, and other obstacles from the complete
+   arm and gripper motion volume.
+4. Put the follower in a stable, safely supported physical state.
+5. Stay beside the robot with one hand ready to press `Enter` or `Ctrl+C` and
+   enough room to support the arm before torque is released.
+
+The script derives the robot ID, port, calibration directory, URDF path, and
+mapping parameters from the accepted mapping file. Only provide explicit
+overrides when intentionally testing a different configuration.
+
+### 3. Run the Offline Preflight
+
+Run:
+
+```bash
+/data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python \
+  /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/validate_viperx_adapter.py \
+  --mapping=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
+```
+
+Before connecting to the ViperX, the script plans the complete trajectory and
+checks:
+
+- IK for every pose;
+- the maximum joint step between neighboring waypoints;
+- every URDF joint limit;
+- the complete `q -> raw -> safe_raw_range` conversion.
+
+The terminal must print:
+
+```text
+raw_plan_preflight=PASS
+live_plan=home -> shoulder_left_-90deg -> base_XZ_heart -> home
+heart_waypoints=48
+Type MOVE to execute this live test:
+```
+
+No hardware connection or motion command occurs before this prompt. Review
+the plan and the physical workspace again. If any preflight check fails, or if
+the workspace is not safe, do not type `MOVE`; press `Enter` or type anything
+else to exit before hardware connection.
+
+Do not add `--yes` during the first Stage 5 acceptance because it bypasses this
+final confirmation.
+
+### 4. Complete the Normal Live Run
+
+At the confirmation prompt, type exactly:
+
+```text
+MOVE
+```
+
+The script then connects to the follower and executes:
+
+1. Move from the current position to the accepted Stage 4 home pose.
+2. Move the shoulder left by 90 degrees.
+3. Trace the approximately 8 cm-wide, 48-waypoint heart in the robot base XZ
+   plane.
+4. Return to the home pose.
+5. Stop active motion and hold the home pose with torque enabled.
+
+After connection, the terminal also explains the live safety interaction:
+
+```text
+Safety: Enter or Ctrl-C halts at the current pose. After you support the arm, Enter releases torque and disconnects.
+```
+
+During this normal run, watch the real arm continuously. The motion must remain
+smooth, visually correct, and clear of collisions. If anything is unsafe,
+press `Enter` or `Ctrl+C` once and follow the interruption procedure in the
+next section.
+
+At the end of a normal trajectory, the robot remains at home and holds its
+pose. Support the physical arm first, then press `Enter` when prompted. This
+releases torque and disconnects the robot. Return it manually to a stable
+supported position after torque is off.
+
+A successful normal run ends with:
+
+```text
+live_home_shoulder_heart_home=PASS
+validate_viperx_adapter=PASS
+```
+
+### 5. Validate Enter/Ctrl-C Stop and Release
+
+The emergency interaction must be tested separately from the successful
+normal run:
+
+1. Run the same command from Section 3 again.
+2. Confirm that the offline preflight prints `raw_plan_preflight=PASS`.
+3. Type exactly `MOVE`.
+4. During a safe part of the motion, press `Enter` or `Ctrl+C` once.
+5. Confirm that the robot stops and holds its current pose rather than
+   continuing the planned trajectory or immediately losing torque.
+6. Physically support the arm.
+7. Press `Enter` once more to release torque and disconnect.
+8. Put the arm in a stable supported position after torque is off.
+
+An intentional interruption raises `ViperXMotionInterrupted`, so a traceback
+and a nonzero process exit are expected for this specific run. The normal PASS
+markers are not expected because the planned trajectory was deliberately not
+completed. Acceptance depends on the physical behavior: stop, hold, supported
+release, and disconnect.
+
+After the interruption test, rerun the full procedure and complete one normal
+run. This final run verifies that the adapter can reconnect and still finish
+the planned trajectory after an interrupted session.
+
+### 6. Stage 5 Acceptance
+
+Stage 5 is accepted only when all of the following have been observed on the
+lab follower:
+
+- The complete plan passes offline checks before any hardware connection and
+  prints `raw_plan_preflight=PASS`.
+- The normal live trajectory is smooth, visually correct, and collision-free
+  in the prepared workspace.
+- The approximately 8 cm heart is traced in the expected base XZ plane.
+- The normal run returns home and prints
+  `live_home_shoulder_heart_home=PASS` and
+  `validate_viperx_adapter=PASS`.
+- At normal completion, the arm holds at home until it is physically supported
+  and the operator presses `Enter` to release torque.
+- During the separate interruption run, one `Enter` or `Ctrl+C` stops and holds
+  the current pose; a second `Enter`, after the arm is supported, releases
+  torque and disconnects.
+- A subsequent normal run reconnects and completes successfully.
+
+This guide documents the Stage 5 acceptance procedure. It does not claim that
+the hardware checks have already been performed.
+
 ## Boundary
 
-This validates the offline software kinematics entry point only. It does not
-prove real ViperX encoder zero, raw encoder direction, LeRobot calibration
-neutral pose, camera mounting transform, or safe hardware motion. IK is a
-mathematical joint solution only; deployment still belongs in the adapter and
-hardware safety layer.
+The offline kinematics entry point and the Stage 4 real raw-to-URDF mapping
+have been validated. The accepted mapping records the real encoder home, URDF
+home, direction signs, and scale, and several live poses matched in PyBullet.
 
-Mapping reduces part of this boundary by explicitly recording real
-encoder home, URDF home, direction signs, and scale. It still does not prove
-camera extrinsics, hand-eye calibration quality, collision-free motion, or
-policy deployment safety.
+Until the Stage 5 acceptance procedure above is completed on the lab follower,
+commanded hardware motion remains unvalidated. Stage 5 still does not establish
+general collision-free planning, camera extrinsics, hand-eye calibration
+quality, or policy deployment safety.

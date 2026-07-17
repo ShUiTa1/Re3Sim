@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port")
     parser.add_argument("--robot-id")
     parser.add_argument("--calibration-dir", type=Path)
-    parser.add_argument("--heart-scale-m", type=float, default=0.004)
+    parser.add_argument("--heart-scale-m", type=float, default=0.0025)
     parser.add_argument("--heart-samples", type=int, default=48)
     parser.add_argument("--max-waypoint-step-rad", type=float, default=0.20)
     parser.add_argument("--yes", action="store_true")
