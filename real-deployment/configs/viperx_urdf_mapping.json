@@ -1,6 +1,6 @@
 {
   "base_link": "vx300s/base_link",
-  "created_at": "2026-07-15T14:00:52.531918+00:00",
+  "created_at": "2026-07-17T21:06:10.417673+00:00",
   "encoder_resolution": {
     "elbow": 4096,
     "forearm_roll": 4096,
@@ -34,12 +34,12 @@
     "wrist_rotate": 0.0
   },
   "raw_home": {
-    "elbow": 2373,
-    "forearm_roll": 2076,
-    "shoulder": 1965,
-    "waist": 2049,
-    "wrist_angle": 2166,
-    "wrist_rotate": 2160
+    "elbow": 2404,
+    "forearm_roll": 2092,
+    "shoulder": 1964,
+    "waist": 2056,
+    "wrist_angle": 2244,
+    "wrist_rotate": 2171
   },
   "safe_raw_range": {
     "elbow": {
@@ -84,6 +84,30 @@
     "wrist_rotate": 0.0015339807878856412
   },
   "schema_version": 1,
+  "shadow_mapping": {
+    "elbow_shadow": {
+      "encoder_resolution": 4096,
+      "joint": "elbow",
+      "raw_home": 2029,
+      "safe_raw_range": {
+        "max": 3049,
+        "min": 670
+      },
+      "scale_rad_per_tick": 0.0015339807878856412,
+      "sign": 1
+    },
+    "shoulder_shadow": {
+      "encoder_resolution": 4096,
+      "joint": "shoulder",
+      "raw_home": 2103,
+      "safe_raw_range": {
+        "max": 2914,
+        "min": 875
+      },
+      "scale_rad_per_tick": 0.0015339807878856412,
+      "sign": 1
+    }
+  },
   "sign": {
     "elbow": 1,
     "forearm_roll": 1,
@@ -95,7 +119,8 @@
   "source": {
     "home": "manual PyBullet GUI home-anchor",
     "note": "",
-    "sign": "LeRobot calibration drive_mode direction bit"
+    "shadow_sign": "second torque-off physical pose raw delta",
+    "sign": "LeRobot calibration drive_mode with validated URDF sign flips: shoulder, elbow, wrist_angle"
   },
   "urdf_limit": {
     "elbow": {
