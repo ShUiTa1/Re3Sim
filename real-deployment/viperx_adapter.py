@@ -34,6 +34,10 @@ ARM_JOINT_NAMES = (
     "wrist_angle",
     "wrist_rotate",
 )
+SHADOW_TO_JOINT = {
+    "shoulder_shadow": "shoulder",
+    "elbow_shadow": "elbow",
+}
 NON_ARM_MOTORS = frozenset({"shoulder_shadow", "elbow_shadow", "gripper"})
 RANGE_M100_100 = "range_m100_100"
 NORMALIZED_POSITION_SPAN = 200.0
@@ -69,6 +73,14 @@ class ViperXUrdfMapping:
     raw_max: IntArray
     q_lower: FloatArray
     q_upper: FloatArray
+    shadow_names: tuple[str, ...]
+    shadow_joint_indices: IntArray
+    shadow_encoder_resolution: IntArray
+    shadow_raw_home: IntArray
+    shadow_sign: IntArray
+    shadow_scale_rad_per_tick: FloatArray
+    shadow_raw_min: IntArray
+    shadow_raw_max: IntArray
 
     @classmethod
     def load(cls, path: str | Path) -> "ViperXUrdfMapping":
@@ -89,6 +101,7 @@ class ViperXUrdfMapping:
             "sign",
             "scale_rad_per_tick",
             "safe_raw_range",
+            "shadow_mapping",
             "urdf_limit",
         }
         missing = required - set(data)
@@ -127,6 +140,46 @@ class ViperXUrdfMapping:
         q_lower = np.asarray([urdf_limits[name]["lower"] for name in joint_order], dtype=np.float64)
         q_upper = np.asarray([urdf_limits[name]["upper"] for name in joint_order], dtype=np.float64)
 
+        shadow_names = tuple(SHADOW_TO_JOINT)
+        shadow_data = data["shadow_mapping"]
+        if set(shadow_data) != set(shadow_names):
+            raise ValueError(f"shadow_mapping keys must be {list(shadow_names)}.")
+        shadow_required = {
+            "joint",
+            "raw_home",
+            "sign",
+            "encoder_resolution",
+            "scale_rad_per_tick",
+            "safe_raw_range",
+        }
+        for shadow, joint in SHADOW_TO_JOINT.items():
+            if set(shadow_data[shadow]) != shadow_required:
+                raise ValueError(f"{shadow} mapping keys are invalid.")
+            if shadow_data[shadow]["joint"] != joint:
+                raise ValueError(f"{shadow} must map to {joint}.")
+
+        shadow_joint_indices = np.asarray(
+            [joint_order.index(SHADOW_TO_JOINT[name]) for name in shadow_names], dtype=np.int64
+        )
+        shadow_resolution = np.asarray(
+            [shadow_data[name]["encoder_resolution"] for name in shadow_names], dtype=np.int64
+        )
+        shadow_raw_home = np.asarray(
+            [shadow_data[name]["raw_home"] for name in shadow_names], dtype=np.int64
+        )
+        shadow_sign = np.asarray(
+            [shadow_data[name]["sign"] for name in shadow_names], dtype=np.int64
+        )
+        shadow_scale = np.asarray(
+            [shadow_data[name]["scale_rad_per_tick"] for name in shadow_names], dtype=np.float64
+        )
+        shadow_raw_min = np.asarray(
+            [shadow_data[name]["safe_raw_range"]["min"] for name in shadow_names], dtype=np.int64
+        )
+        shadow_raw_max = np.asarray(
+            [shadow_data[name]["safe_raw_range"]["max"] for name in shadow_names], dtype=np.int64
+        )
+
         if np.any(resolution <= 0):
             raise ValueError("Encoder resolutions must be positive.")
         if np.any(~np.isin(sign, (-1, 1))):
@@ -139,6 +192,20 @@ class ViperXUrdfMapping:
             raise ValueError("Mapping raw home/ranges are invalid.")
         if np.any(q_lower >= q_upper) or np.any(q_home < q_lower) or np.any(q_home > q_upper):
             raise ValueError("Mapping URDF home/limits are invalid.")
+        if np.any(shadow_resolution <= 0):
+            raise ValueError("Shadow encoder resolutions must be positive.")
+        if np.any(~np.isin(shadow_sign, (-1, 1))):
+            raise ValueError("Shadow mapping signs must be +1 or -1.")
+        if np.any(shadow_scale <= 0.0) or not np.allclose(
+            shadow_scale, 2.0 * np.pi / shadow_resolution, rtol=1e-9, atol=1e-12
+        ):
+            raise ValueError("Shadow mapping scales must equal 2*pi/encoder_resolution.")
+        if (
+            np.any(shadow_raw_min >= shadow_raw_max)
+            or np.any(shadow_raw_home < shadow_raw_min)
+            or np.any(shadow_raw_home > shadow_raw_max)
+        ):
+            raise ValueError("Shadow mapping raw home/ranges are invalid.")
 
         robot_id = str(data["lerobot"].get("robot_id", ""))
         base_link = str(data["base_link"])
@@ -161,7 +228,19 @@ class ViperXUrdfMapping:
             raw_max=raw_max,
             q_lower=q_lower,
             q_upper=q_upper,
+            shadow_names=shadow_names,
+            shadow_joint_indices=shadow_joint_indices,
+            shadow_encoder_resolution=shadow_resolution,
+            shadow_raw_home=shadow_raw_home,
+            shadow_sign=shadow_sign,
+            shadow_scale_rad_per_tick=shadow_scale,
+            shadow_raw_min=shadow_raw_min,
+            shadow_raw_max=shadow_raw_max,
         )
+
+    @property
+    def actuator_names(self) -> tuple[str, ...]:
+        return self.joint_order + self.shadow_names
 
     def validate_raw(self, raw_positions: Mapping[str, Any]) -> dict[str, int]:
         if set(raw_positions) != set(self.joint_order):
@@ -192,6 +271,31 @@ class ViperXUrdfMapping:
             raise ValueError("Joint target violates mapping URDF limits.")
         return q
 
+    def validate_actuator_raw(self, raw_positions: Mapping[str, Any]) -> dict[str, int]:
+        if set(raw_positions) != set(self.actuator_names):
+            raise ValueError("Raw actuator keys must match the six arm joints and two shadow motors.")
+        validated = self.validate_raw({name: raw_positions[name] for name in self.joint_order})
+        values = np.asarray([raw_positions[name] for name in self.shadow_names], dtype=np.float64)
+        if not np.all(np.isfinite(values)) or not np.allclose(values, np.rint(values)):
+            raise ValueError("Shadow raw positions must be finite integer encoder ticks.")
+        values = np.rint(values).astype(np.int64)
+        invalid = (values < self.shadow_raw_min) | (values > self.shadow_raw_max)
+        if np.any(invalid):
+            details = {
+                name: {
+                    "raw": int(values[index]),
+                    "min": int(self.shadow_raw_min[index]),
+                    "max": int(self.shadow_raw_max[index]),
+                }
+                for index, name in enumerate(self.shadow_names)
+                if invalid[index]
+            }
+            raise ValueError(f"Shadow raw values violate mapping safe raw range: {details}")
+        validated.update(
+            {name: int(values[index]) for index, name in enumerate(self.shadow_names)}
+        )
+        return {name: validated[name] for name in self.actuator_names}
+
     def raw_to_rad(self, raw_positions: Mapping[str, Any]) -> FloatArray:
         raw = self.validate_raw(raw_positions)
         raw_array = np.asarray([raw[name] for name in self.joint_order], dtype=np.float64)
@@ -206,6 +310,22 @@ class ViperXUrdfMapping:
         return self.validate_raw(
             {name: int(raw[index]) for index, name in enumerate(self.joint_order)}
         )
+
+    def rad_to_actuator_raw(self, q_rad: Sequence[float]) -> dict[str, int]:
+        q = self.validate_q(q_rad)
+        raw = self.rad_to_raw(q)
+        shadow_q = q[self.shadow_joint_indices]
+        shadow_q_home = self.q_home_urdf[self.shadow_joint_indices]
+        shadow_raw = np.rint(
+            self.shadow_raw_home
+            + self.shadow_sign
+            * (shadow_q - shadow_q_home)
+            / self.shadow_scale_rad_per_tick
+        ).astype(np.int64)
+        raw.update(
+            {name: int(shadow_raw[index]) for index, name in enumerate(self.shadow_names)}
+        )
+        return self.validate_actuator_raw(raw)
 
 
 def load_viperx_urdf_mapping(path: str | Path) -> ViperXUrdfMapping:
@@ -233,6 +353,7 @@ class ViperXAdapter:
             mapping if isinstance(mapping, ViperXUrdfMapping) else ViperXUrdfMapping.load(mapping)
         )
         self.arm_joint_names = self._arm_joint_names()
+        self.arm_actuator_names = self.mapping.actuator_names
         self._calibration = self._loaded_calibration()
         self._validate_contract()
 
@@ -276,11 +397,13 @@ class ViperXAdapter:
         calibration = getattr(self.robot, "calibration", None) or getattr(
             self.robot.bus, "calibration", None
         )
-        if not calibration or any(name not in calibration for name in self.arm_joint_names):
-            raise RuntimeError("LeRobot arm calibration is not loaded.")
+        if not calibration or any(name not in calibration for name in self.arm_actuator_names):
+            raise RuntimeError("LeRobot arm and shadow calibration is not loaded.")
         return calibration
 
     def _validate_contract(self) -> None:
+        if any(name not in self.robot.bus.motors for name in self.arm_actuator_names):
+            raise ValueError("LeRobot motors do not contain all mapped arm actuators.")
         if str(getattr(self.robot, "id", "")) != self.mapping.robot_id:
             raise ValueError("LeRobot robot id does not match the mapping.")
         if tuple(getattr(self.model, "arm_joint_names", ())) != self.mapping.joint_order:
@@ -316,19 +439,41 @@ class ViperXAdapter:
         ):
             raise ValueError("LeRobot calibration ranges do not match the mapping.")
 
+        for index, name in enumerate(self.mapping.shadow_names):
+            motor = self.robot.bus.motors[name]
+            resolution = self.robot.bus.model_resolution_table[motor.model]
+            if resolution != self.mapping.shadow_encoder_resolution[index]:
+                raise ValueError(f"LeRobot {name} encoder resolution does not match the mapping.")
+            range_min = _calibration_value(self._calibration[name], "range_min")
+            range_max = _calibration_value(self._calibration[name], "range_max")
+            if (
+                range_min != self.mapping.shadow_raw_min[index]
+                or range_max != self.mapping.shadow_raw_max[index]
+            ):
+                raise ValueError(f"LeRobot {name} calibration range does not match the mapping.")
+            norm_mode = getattr(motor.norm_mode, "value", motor.norm_mode)
+            if norm_mode != RANGE_M100_100:
+                raise ValueError(f"{name} must use LeRobot RANGE_M100_100 normalization.")
+
     def _motion_step_limits(self) -> tuple[IntArray, FloatArray]:
         configured = getattr(self.robot.config, "max_relative_target", None)
         if isinstance(configured, Mapping):
-            if any(name not in configured for name in self.arm_joint_names):
-                raise ValueError("max_relative_target is missing arm joints.")
+            if any(name not in configured for name in self.arm_actuator_names):
+                raise ValueError("max_relative_target is missing arm or shadow actuators.")
             normalized = np.asarray(
                 [configured[name] for name in self.arm_joint_names], dtype=np.float64
             )
+            shadow_normalized = np.asarray(
+                [configured[name] for name in self.mapping.shadow_names], dtype=np.float64
+            )
         elif isinstance(configured, Real) and not isinstance(configured, bool):
             normalized = np.full(len(self.arm_joint_names), float(configured))
+            shadow_normalized = np.full(len(self.mapping.shadow_names), float(configured))
         else:
             raise ValueError("max_relative_target must be a scalar or arm-joint mapping.")
-        if not np.allclose(normalized, EXPECTED_MAX_RELATIVE_TARGET, rtol=0.0, atol=1e-12):
+        if not np.allclose(normalized, EXPECTED_MAX_RELATIVE_TARGET, rtol=0.0, atol=1e-12) or not np.allclose(
+            shadow_normalized, EXPECTED_MAX_RELATIVE_TARGET, rtol=0.0, atol=1e-12
+        ):
             raise ValueError("ViperX max_relative_target must remain 5 normalized units.")
 
         raw_steps = np.floor(
@@ -336,7 +481,20 @@ class ViperXAdapter:
         ).astype(np.int64)
         if np.any(raw_steps < 1):
             raise ValueError("max_relative_target converts to less than one encoder tick.")
-        return raw_steps, raw_steps * self.mapping.scale_rad_per_tick
+        max_step_rad = raw_steps * self.mapping.scale_rad_per_tick
+        shadow_raw_steps = np.floor(
+            shadow_normalized
+            / NORMALIZED_POSITION_SPAN
+            * (self.mapping.shadow_raw_max - self.mapping.shadow_raw_min)
+        ).astype(np.int64)
+        if np.any(shadow_raw_steps < 1):
+            raise ValueError("Shadow max_relative_target converts to less than one encoder tick.")
+        shadow_step_rad = shadow_raw_steps * self.mapping.shadow_scale_rad_per_tick
+        for shadow_index, joint_index in enumerate(self.mapping.shadow_joint_indices):
+            max_step_rad[joint_index] = min(
+                max_step_rad[joint_index], shadow_step_rad[shadow_index]
+            )
+        return raw_steps, max_step_rad
 
     def _validate_q(self, q_rad: Sequence[float]) -> FloatArray:
         return np.asarray(
@@ -370,11 +528,11 @@ class ViperXAdapter:
 
     def _validate_goal_update_mode(self) -> None:
         drive_modes = self.robot.bus.sync_read(
-            "Drive_Mode", list(self.arm_joint_names), normalize=False
+            "Drive_Mode", list(self.arm_actuator_names), normalize=False
         )
         unsafe = {
             name: int(drive_modes[name])
-            for name in self.arm_joint_names
+            for name in self.arm_actuator_names
             if int(drive_modes[name]) & TORQUE_ON_BY_GOAL_UPDATE_BIT
         }
         if unsafe:
@@ -454,8 +612,8 @@ class ViperXAdapter:
             if not self.robot.bus.is_calibrated:
                 raise RuntimeError("LeRobot calibration was not applied to the hardware.")
             self._validate_goal_update_mode()
-            self._session_start_raw = self.read_raw_joints()
-            self._write_raw_joints(self._session_start_raw)
+            self._session_start_raw, _ = self._read_raw_actuator_snapshot()
+            self._write_raw_actuators(self._session_start_raw)
             self._motion_state = "active"
             self._install_sigint_handler()
             self._start_terminal_monitor()
@@ -473,13 +631,20 @@ class ViperXAdapter:
         self._cleanup_connections(disable_torque=bool(disable_torque))
         self._reset_safety_state()
 
-    def _read_raw_snapshot(self) -> tuple[dict[str, int], float]:
+    def _read_raw_actuator_snapshot(self) -> tuple[dict[str, int], float]:
         if not self.is_connected:
             raise RuntimeError("ViperX adapter is not connected.")
         raw = self.robot.bus.sync_read(
-            "Present_Position", list(self.arm_joint_names), normalize=False
+            "Present_Position", list(self.arm_actuator_names), normalize=False
         )
-        return self.mapping.validate_raw(raw), time.time()
+        return self.mapping.validate_actuator_raw(raw), time.time()
+
+    def _read_raw_snapshot(self) -> tuple[dict[str, int], float]:
+        actuator_raw, timestamp_s = self._read_raw_actuator_snapshot()
+        return (
+            {name: actuator_raw[name] for name in self.arm_joint_names},
+            timestamp_s,
+        )
 
     def read_raw_joints(self) -> dict[str, int]:
         raw, _ = self._read_raw_snapshot()
@@ -497,11 +662,11 @@ class ViperXAdapter:
     def get_ee_pose(self) -> FloatArray:
         return np.asarray(self.model.fk(self.read_joints()), dtype=np.float64)
 
-    def _write_raw_joints(self, raw_targets: Mapping[str, Any]) -> None:
+    def _write_raw_actuators(self, raw_targets: Mapping[str, Any]) -> None:
         if not self.is_connected:
             raise RuntimeError("ViperX adapter is not connected.")
         self.robot.bus.sync_write(
-            "Goal_Position", self.mapping.validate_raw(raw_targets), normalize=False
+            "Goal_Position", self.mapping.validate_actuator_raw(raw_targets), normalize=False
         )
 
     def _raise_if_stop_requested(self) -> None:
@@ -521,8 +686,8 @@ class ViperXAdapter:
             raise RuntimeError(f"Cannot halt motion from state {self._motion_state!r}.")
 
         try:
-            held_raw = self.read_raw_joints()
-            self._write_raw_joints(held_raw)
+            held_raw, _ = self._read_raw_actuator_snapshot()
+            self._write_raw_actuators(held_raw)
         except Exception:
             self._motion_state = "unsafe"
             print("ViperX could not confirm a holding target; support the arm before releasing torque.")
@@ -531,7 +696,7 @@ class ViperXAdapter:
         self._held_raw = held_raw
         self._motion_state = "holding"
         print("ViperX is holding its current pose. Support the arm, then press Enter or call release().")
-        return held_raw
+        return {name: held_raw[name] for name in self.arm_joint_names}
 
     def release(self, *, prepare_raw: Mapping[str, Any] | None = None) -> None:
         """Disable torque, prepare the next-session goal, and close all connections."""
@@ -550,7 +715,7 @@ class ViperXAdapter:
         try:
             self.robot.bus.disable_torque()
             self.robot.bus.sync_write(
-                "Goal_Position", self.mapping.validate_raw(next_goal), normalize=False
+                "Goal_Position", self.mapping.validate_actuator_raw(next_goal), normalize=False
             )
         except Exception as exc:
             release_error = exc
@@ -592,7 +757,7 @@ class ViperXAdapter:
         if not self.is_connected:
             raise RuntimeError("ViperX adapter is not connected.")
         target = self._validate_q(q_target_rad)
-        self.rad_to_raw(target)
+        self.mapping.rad_to_actuator_raw(target)
 
         timeout = self.motion_timeout_s if timeout_s is None else float(timeout_s)
         tolerance = self.position_tolerance_rad if tolerance_rad is None else float(tolerance_rad)
@@ -618,7 +783,7 @@ class ViperXAdapter:
                     next_q = measured + np.clip(
                         error, -self.max_joint_step_rad, self.max_joint_step_rad
                     )
-                    self._write_raw_joints(self.rad_to_raw(next_q))
+                    self._write_raw_actuators(self.mapping.rad_to_actuator_raw(next_q))
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.0:
