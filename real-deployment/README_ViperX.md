@@ -436,18 +436,25 @@ conda deactivate
 
 ## ViperX Adapter Live Validation
 
-This Stage 5 procedure validates the accepted Stage 4 mapping through the
-`ViperXAdapter` command path. It performs a live
-`home -> shoulder left 90 degrees -> base XZ heart -> home` motion and then
-checks the operator stop, hold, torque-release, and reconnect behavior.
+This is the Stage 5 runbook for validating the accepted Stage 4 mapping through
+the `ViperXAdapter` command path.
 
-The default heart is approximately 8 cm wide. This procedure sends real
-`Goal_Position` commands. Keep the robot within reach, clear the complete
-motion volume, and do not run it unattended.
+**Current status: Stage 5 is paused and not accepted. Do not enter `SHADOW` or
+`MOVE`, do not increase `--shadow-step-rad`, and do not run `--full-plan` until
+the measured-state limit handling and the motion-speed boundary described
+below have been corrected and reviewed.**
 
-Do not consider Stage 5 accepted until both the normal live run and the
-intentional interruption run below have been completed, followed by a
-successful reconnect.
+The adapter now keeps its Re3Sim-facing state and action vectors at six arm
+joints while explicitly generating and writing eight actuator targets: the six
+main joints plus `shoulder_shadow` and `elbow_shadow`, each using its own
+`raw_home`, sign, scale, and raw range. No-hardware lifecycle checks passed for
+connect, eight-actuator hold, shadow motion, stop, and release.
+
+One lab run of the default small shadow test printed its PASS markers, but only
+after the operator lifted the arm enough to put the measured start pose inside
+the URDF limits. The movement was also visibly too fast. This result confirms
+that the explicit main/shadow command path can move; it does not accept startup
+state handling, speed safety, the full trajectory, or Stage 5 as a whole.
 
 ### 1. Enter the Lab Project and Environment
 
@@ -463,27 +470,69 @@ The `source` command is required once in each new terminal or SSH session
 before the first Conda command. It does not modify `~/.bashrc` and does not
 require `conda init`.
 
-### 2. Prepare the Robot and Workspace
+### 2. Current Joint-Limit Boundary and Known Mismatch
 
-Before running the script:
+URDF/RTB joint limits are mandatory for command targets, IK results, and every
+planned trajectory waypoint. A measured `Present_Position`, however, is a
+physical fact and must remain readable even when its converted q is outside a
+model limit. An out-of-limit measured start state must block ordinary motion
+and produce an exact diagnostic; it must not be discarded by a target-validation
+exception.
 
-1. Check that the accepted Stage 4 mapping exists at
-   `/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json`.
-2. Confirm that `/dev/ttyDXL_follower_left` still points to the follower
-   ViperX.
-3. Clear people, tools, cables, cameras, and other obstacles from the complete
-   arm and gripper motion volume.
-4. Put the follower in a stable, safely supported physical state.
-5. Stay beside the robot with one hand ready to press `Enter` or `Ctrl+C` and
-   enough room to support the arm before torque is released.
+The current adapter still calls target-limit validation while converting a
+measured state. That is why the lab test could start only after the arm was
+lifted into the URDF range.
 
-The script derives the robot ID, port, calibration directory, URDF path, and
-mapping parameters from the accepted mapping file. Only provide explicit
-overrides when intentionally testing a different configuration.
+The accepted mapping and URDF currently contain these relevant ranges:
 
-### 3. Run the Offline Preflight
+| Joint | Calibration raw range converted to q | Project URDF limit |
+|---|---:|---:|
+| `shoulder` | approximately `[-107.84°, 71.10°]` | `[-106°, 72°]` |
+| `elbow` | approximately `[-118.56°, 90.44°]` | `[-101°, 92°]` |
 
-Run:
+The calibration raw range records encoder positions observed during LeRobot
+calibration; it is not automatically a safe model range. Trossen's current
+[ViperX-300 6DOF specification](https://docs.trossenrobotics.com/interbotix_xsarms_docs/specifications/vx300s.html)
+describes the default joint limits as safe operating ranges and lists shoulder
+`[-101°, 101°]` and elbow `[-101°, 92°]`. The project shoulder URDF therefore
+needs a source/version audit, while the current elbow calibration range clearly
+extends below both the project URDF and the current manufacturer default.
+Neither discrepancy authorizes changing the accepted URDF limits merely to
+include a table-supported resting pose.
+
+### 3. Current Speed Issue
+
+`max_relative_target=5` limits the position change in one command; it is not a
+velocity limit. The default shadow test changes a joint by `0.05 rad`, about 33
+encoder ticks. This is smaller than the current shoulder/elbow per-command
+limit, so the final target is sent in one `Goal_Position` update. In that case,
+`command_period_s=0.05` does not create a slow interpolated trajectory.
+
+Neither the adapter nor the current LeRobot ViperX `configure()` path establishes
+an accepted `Profile_Velocity`/`Profile_Acceleration` setting or a software
+rad/s limit. Before the next live run, record all eight actuators' `Drive_Mode`,
+`Profile_Velocity`, `Profile_Acceleration`, and `Velocity_Limit` without changing
+them, then choose and verify one explicit speed-control boundary.
+
+### 4. Operations Allowed While Stage 5 Is Paused
+
+The Stage 4 mapping may still be validated offline without connecting to the
+robot:
+
+```bash
+/data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python \
+  /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
+  --mapping=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
+```
+
+Required result:
+
+```text
+validate_viperx_urdf_mapping=PASS
+```
+
+The adapter's current default preflight can also be inspected without hardware
+connection:
 
 ```bash
 /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python \
@@ -491,126 +540,74 @@ Run:
   --mapping=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
 ```
 
-Before connecting to the ViperX, the script plans the complete trajectory and
-checks:
-
-- IK for every pose;
-- the maximum joint step between neighboring waypoints;
-- every URDF joint limit;
-- the complete `q -> raw -> safe_raw_range` conversion.
-
-The terminal must print:
+It should print:
 
 ```text
-raw_plan_preflight=PASS
-live_plan=home -> shoulder_left_-90deg -> base_XZ_heart -> home
-heart_waypoints=48
-Type MOVE to execute this live test:
+shadow_raw_plan_preflight=PASS
+live_plan=current_pose -> small_shoulder_check -> small_elbow_check -> current_pose
+Type SHADOW to execute this live test:
 ```
 
-No hardware connection or motion command occurs before this prompt. Review
-the plan and the physical workspace again. If any preflight check fails, or if
-the workspace is not safe, do not type `MOVE`; press `Enter` or type anything
-else to exit before hardware connection.
+Press `Enter` without typing `SHADOW`. The script exits before constructing or
+connecting the hardware robot. Do not use `--yes`.
 
-Do not add `--yes` during the first Stage 5 acceptance because it bypasses this
-final confirmation.
+The existing `--full-plan` preflight may be reviewed in the same way only if no
+one types `MOVE`; however, because the live full plan is explicitly paused,
+there is no current acceptance reason to run it.
 
-### 4. Complete the Normal Live Run
+### 5. Required Corrections Before the Next Live Run
 
-At the confirmation prompt, type exactly:
+1. Separate measured-state conversion from command-target validation.
+2. Make `read_joints()` return finite mapped q even when it is outside a URDF
+   limit.
+3. Before ordinary motion, print each start-state violation with the joint
+   name, measured value, limit, and excess; hold the exact eight-actuator start
+   raw and exit safely.
+4. Keep strict URDF/RTB limit checks for every commanded target, IK result, and
+   trajectory waypoint.
+5. Read and record the eight motors' profile and drive registers without
+   changing them.
+6. Add one explicit, reproducible speed boundary and verify that it reaches the
+   target without relying on `max_relative_target` as a velocity control.
+7. Preserve the current rule that URDF `q=0`, Dynamixel `Homing_Offset` and
+   `Drive_Mode`, and LeRobot calibration are not rewritten to absorb the
+   adapter mapping.
 
-```text
-MOVE
-```
+Automatic recovery from an out-of-limit measured start is not part of the
+minimal correction. Initially, the system should report, hold, and exit. A
+low-speed recovery mode may be designed later as a separate operation.
 
-The script then connects to the follower and executes:
+### 6. Stage 5 Acceptance Sequence After the Corrections
 
-1. Move from the current position to the accepted Stage 4 home pose.
-2. Move the shoulder left by 90 degrees.
-3. Trace the approximately 8 cm-wide, 48-waypoint heart in the robot base XZ
-   plane.
-4. Return to the home pose.
-5. Stop active motion and hold the home pose with torque enabled.
+Run the following gates in order; a failed gate blocks all later gates:
 
-After connection, the terminal also explains the live safety interaction:
+1. Offline mapping and eight-actuator conversion checks.
+2. Start-state tests on both an in-limit pose and a deliberately supported
+   out-of-limit pose. The latter must be reported without a motion command.
+3. A speed-limited default `SHADOW` run: shoulder pair out-and-back, then elbow
+   pair out-and-back. Review goal/present position, current, PWM, hardware
+   status, and mechanical behavior.
+4. A `--full-plan` offline-only preflight; exit at the `MOVE` prompt.
+5. One normal speed-limited full run:
+   `current -> home -> shoulder left 90 degrees -> approximately 8 cm base-XZ
+   heart -> home -> supported release`.
+6. A separate intentional interruption run: the first `Enter` or `Ctrl+C` must
+   stop and hold; after physical support, a second `Enter` must release torque
+   and disconnect.
+7. One final full run to prove clean reconnect after the interruption.
 
-```text
-Safety: Enter or Ctrl-C halts at the current pose. After you support the arm, Enter releases torque and disconnects.
-```
-
-During this normal run, watch the real arm continuously. The motion must remain
-smooth, visually correct, and clear of collisions. If anything is unsafe,
-press `Enter` or `Ctrl+C` once and follow the interruption procedure in the
-next section.
-
-At the end of a normal trajectory, the robot remains at home and holds its
-pose. Support the physical arm first, then press `Enter` when prompted. This
-releases torque and disconnects the robot. Return it manually to a stable
-supported position after torque is off.
-
-A successful normal run ends with:
-
-```text
-live_home_shoulder_heart_home=PASS
-validate_viperx_adapter=PASS
-```
-
-### 5. Validate Enter/Ctrl-C Stop and Release
-
-The emergency interaction must be tested separately from the successful
-normal run:
-
-1. Run the same command from Section 3 again.
-2. Confirm that the offline preflight prints `raw_plan_preflight=PASS`.
-3. Type exactly `MOVE`.
-4. During a safe part of the motion, press `Enter` or `Ctrl+C` once.
-5. Confirm that the robot stops and holds its current pose rather than
-   continuing the planned trajectory or immediately losing torque.
-6. Physically support the arm.
-7. Press `Enter` once more to release torque and disconnect.
-8. Put the arm in a stable supported position after torque is off.
-
-An intentional interruption raises `ViperXMotionInterrupted`, so a traceback
-and a nonzero process exit are expected for this specific run. The normal PASS
-markers are not expected because the planned trajectory was deliberately not
-completed. Acceptance depends on the physical behavior: stop, hold, supported
-release, and disconnect.
-
-After the interruption test, rerun the full procedure and complete one normal
-run. This final run verifies that the adapter can reconnect and still finish
-the planned trajectory after an interrupted session.
-
-### 6. Stage 5 Acceptance
-
-Stage 5 is accepted only when all of the following have been observed on the
-lab follower:
-
-- The complete plan passes offline checks before any hardware connection and
-  prints `raw_plan_preflight=PASS`.
-- The normal live trajectory is smooth, visually correct, and collision-free
-  in the prepared workspace.
-- The approximately 8 cm heart is traced in the expected base XZ plane.
-- The normal run returns home and prints
-  `live_home_shoulder_heart_home=PASS` and
-  `validate_viperx_adapter=PASS`.
-- At normal completion, the arm holds at home until it is physically supported
-  and the operator presses `Enter` to release torque.
-- During the separate interruption run, one `Enter` or `Ctrl+C` stops and holds
-  the current pose; a second `Enter`, after the arm is supported, releases
-  torque and disconnects.
-- A subsequent normal run reconnects and completes successfully.
-
-This guide documents the Stage 5 acceptance procedure. It does not claim that
-the hardware checks have already been performed.
+Stage 5 is accepted only when all seven gates pass. A PASS marker from the
+earlier conditional shadow run is retained as diagnostic progress, not as an
+acceptance result.
 
 ## Boundary
 
-The offline kinematics entry point and the Stage 4 real raw-to-URDF mapping
-have been validated. The accepted mapping records the real encoder home, URDF
-home, direction signs, and scale, and several live poses matched in PyBullet.
+The offline ViperX kinematics and the six-joint Stage 4 raw-to-URDF mapping are
+accepted. The two independent shadow anchors are recorded, and one conditional
+small live run demonstrated that explicit eight-actuator commands can move the
+paired joints.
 
-Until the Stage 5 acceptance procedure above is completed on the lab follower,
-commanded hardware motion remains unvalidated. Stage 5 still does not establish
-general collision-free planning, camera extrinsics, hand-eye calibration
-quality, or policy deployment safety.
+Measured-start handling, command speed, the full live plan, deliberate
+stop/hold/release, and reconnect remain unaccepted. Stage 5 also does not
+establish general collision-free planning, camera extrinsics, hand-eye
+calibration quality, or policy deployment safety.
