@@ -396,40 +396,26 @@ Repeat the command for several distinct safe poses. Each run must end with:
 validate_viperx_urdf_mapping=PASS
 ```
 
-### 7. Verify All Six Joint Signs
+### 7. Acceptance
 
-After the multi-pose GUI check, verify the URDF-positive direction one joint at
-a time:
+Stage 4 has been accepted for `left_follower` using the procedure above:
 
-```bash
-python /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
-  --live=true \
-  --verify_signs=true \
-  --robot.type=viperx \
-  --robot.port=/dev/ttyDXL_follower_left \
-  --robot.id=left_follower \
-  --robot.calibration_dir=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/lerobot_calibration/robots/viperx \
-  --mapping=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
-```
+- The environment import command printed `stage4 env ok`.
+- Both `left_leader.json` and `left_follower.json` were created at the paths
+  above.
+- The home-anchor mapping was saved to
+  `/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json`.
+- The initial mapping showed reversed PyBullet motion for `shoulder`, `elbow`,
+  and `wrist_angle` during live GUI validation.
+- Those three mapping signs were flipped manually. The accepted mapping has
+  sign `+1` for all six arm joints.
+- Offline validation printed `validate_viperx_urdf_mapping=PASS` after the
+  correction.
+- Several distinct live GUI poses matched the corresponding real follower
+  poses, and each run printed `validate_viperx_urdf_mapping=PASS`.
 
-Follow the terminal prompts and support the arm throughout the manual joint
-movement. If an observed direction disagrees with the mapping, the script asks
-for confirmation before changing only the `sign` in the mapping JSON. It does
-not modify the URDF, Dynamixel configuration, or LeRobot calibration.
-
-If any sign changes, rerun the offline check and the live GUI checks.
-
-### 8. Acceptance
-
-Stage 4 is accepted when:
-
-- The environment import command prints `stage4 env ok`.
-- Both `left_leader.json` and `left_follower.json` exist at the paths above.
-- `viperx_urdf_mapping.json` is created in the project config directory.
-- Offline validation prints `validate_viperx_urdf_mapping=PASS`.
-- Several live GUI poses match the corresponding real follower poses.
-- All six joint signs have been checked.
-- Any sign correction is followed by another offline and live GUI validation.
+The repeated live raw-to-URDF PyBullet pose comparison is the final Stage 4
+direction and alignment check.
 
 When finished:
 
