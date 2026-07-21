@@ -434,6 +434,50 @@ When finished:
 conda deactivate
 ```
 
+## Torque-Off ViperX Pose Inspection
+
+Use `inspect_viperx_pose.py` in the lab to inspect manually selected ViperX
+poses before defining shooting regions or automatic targets. It reuses the
+accepted Stage 4 mapping and the Stage 2 FK model to report:
+
+- raw encoder ticks for the six arm joints and two shadow motors;
+- the six mapped URDF joint angles in radians;
+- the end-effector XYZ position in metres, from `vx300s/base_link` to
+  `vx300s/ee_gripper_link`;
+- warnings when the measured raw values or mapped joint angles are outside the
+  recorded ranges.
+
+Open a new terminal and run:
+
+```bash
+cd /home/yuzzhu/Projects/Re3Sim_ViperX
+source /data/yuzzhu/Re3Sim_ViperX/tools/miniforge3/etc/profile.d/conda.sh
+conda activate /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib
+
+python /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/inspect_viperx_pose.py \
+  --mapping /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
+```
+
+Operation:
+
+1. Support the arm and manually place it at the pose to inspect.
+2. Press `Enter`. The script connects to the motor bus, disables and verifies
+   torque, then prints the first snapshot.
+3. Move the torque-off arm to another supported pose and press `Enter` again.
+   Repeat as needed.
+4. Enter `E` and press `Enter` to disable torque again, disconnect, and exit.
+
+A normal exit ends with:
+
+```text
+viperx_pose_inspection=EXITED_CLEANLY
+```
+
+The script never enables torque and never writes `Goal_Position`. `Ctrl-C`,
+terminal EOF, and runtime exceptions also enter the torque-off disconnect path.
+An out-of-range snapshot is still printed for diagnosis, but its `WARNING`
+status means that pose must not be treated as a validated motion target.
+
 ## ViperX Adapter Live Validation
 
 This is the Stage 5 runbook for validating the accepted Stage 4 mapping through

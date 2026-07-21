@@ -1,204 +1,291 @@
-"""
-Hand-in-eye calibration entry script.
+"""Solve ViperX wrist-camera hand-eye calibration from shooting data.
 
-This script consumes the calibration dataset collected by
-``hand_in_eye_shooting.ipynb`` and computes ``cam_to_hand_pose.npy``.
+This is the ViperX replacement for ``hand_in_eye_calib.py``.  The OpenCV
+ChArUco and hand-eye algorithm remain unchanged.  Only the Panda-specific
+robot boundary is replaced:
 
-High-level purpose:
-1. Load RGB/depth images, camera intrinsics, robot poses, and optionally joints.
-2. Convert robot-specific pose records into a common "hand/gripper -> base"
-   homogeneous transform expected by OpenCV's hand-eye calibration API.
-3. Detect the ChArUco calibration board in each RGB image.
-4. Solve the fixed transform from the wrist camera frame to the robot hand frame.
+* input robot state is the six measured URDF-radian joints written by
+  ``hand_in_eye_shooting_ViperX.ipynb``;
+* FK uses the accepted ViperX full-URDF model and the dataset's Stage-4 mapping
+  metadata for joint order and base/end frames;
+* the calibration ``hand`` is ``vx300s/ee_gripper_link`` (or the exact end link
+  recorded by that mapping), not a task TCP;
+* missing joints are an error.  The Panda TCP -> IK -> hand fallback is not
+  meaningful for this dataset and is deliberately removed.
 
-Important migration note for ViperX:
-- Everything below that constructs ``rtb.models.Panda()`` or uses the end-effector
-  name ``"panda_hand"`` is Franka/Panda-specific.
-- For ViperX, replace those functions with an adapter that returns the same
-  semantic quantity: a 4x4 transform ``T_hand_to_base`` for every captured frame.
-- If you use LeRobot for hardware IO, LeRobot should provide/record joint states
-  or end-effector state. If you use roboticstoolbox for kinematics, build/load a
-  ViperX model and make ``joint_to_hand`` call that model's FK with the correct
-  ViperX end-effector link name.
+The eight raw actuator values saved by shooting are diagnostic records.  They
+are not solver inputs and this offline script never connects to hardware.
 """
 
-import numpy as np
-import os
+from __future__ import annotations
+
+import argparse
+import json
 import sys
-import open3d as o3d
-import cv2
-from tqdm import trange
-import roboticstoolbox as rtb
+from pathlib import Path
+from typing import Any, Sequence
 
-# The calibration package lives two directories above the current working
-# directory when this script is launched from ``real-deployment/calibration``.
-# Adding that path keeps the original repo layout working without installing
-# the package. If you later package this code properly, replace this with an
-# editable install or an absolute project import.
-parent_dir = os.path.dirname(os.getcwd())
-parent_dir = os.path.dirname(parent_dir)
-sys.path.append(parent_dir)
+import cv2
+import numpy as np
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REAL_DEPLOYMENT_DIR = SCRIPT_DIR.parent
+for import_dir in (SCRIPT_DIR, REAL_DEPLOYMENT_DIR):
+    import_dir_text = str(import_dir)
+    if import_dir_text not in sys.path:
+        sys.path.insert(0, import_dir_text)
 
 from calibration.hand_in_eye import HandinEyeCalibrator
 from calibration.utils import read_data
+from viperx_adapter import ViperXUrdfMapping
+from viperx_model import load_viperx_model
 
 
-def tcp_to_hand(pose):
-    """Convert a Panda TCP pose into the Panda hand-link pose.
+EXPECTED_ARM_JOINT_COUNT = 6
+DEFAULT_MAPPING_FILENAME = "viperx_urdf_mapping.json"
+CHARUCO_BOARD_SHAPE = (5, 5)
+CHARUCO_SQUARE_LENGTH_M = 0.036
+CHARUCO_MARKER_LENGTH_M = 0.027
 
-    Why this exists:
-    - Some robot APIs log the pose of a "TCP" frame, while OpenCV calibration is
-      called below with a "gripper/hand" frame. Those frames are not always the
-      same. On Franka/Panda, the code wants ``panda_hand``.
-    - The original script recovers a Panda joint vector with IK and then runs FK
-      to the ``panda_hand`` link. That is a Franka-specific workaround.
 
-    Input:
-    - ``pose``: expected to be a 4x4 homogeneous transform for the Panda TCP in
-      the robot base frame. A homogeneous transform stores rotation in the upper
-      left 3x3 block and translation in the last column.
+def resolve_mapping_path(
+    data_root: str | Path,
+    mapping_path: str | Path | None,
+) -> Path:
+    """Return the exact Stage-4 mapping snapshot associated with the dataset."""
 
-    Output:
-    - ``hand_pose``: 4x4 transform ``T_hand_to_base`` used by
-      ``cv2.calibrateHandEye`` as gripper-to-base data.
+    data_root = Path(data_root).expanduser().resolve()
+    candidate = (
+        data_root / "configs" / DEFAULT_MAPPING_FILENAME
+        if mapping_path is None
+        else Path(mapping_path).expanduser()
+    )
+    candidate = candidate.resolve()
+    if not candidate.is_file():
+        raise FileNotFoundError(
+            f"ViperX mapping file not found: {candidate}. "
+            "Pass --mapping if the dataset snapshot has a different path."
+        )
+    return candidate
 
-    ViperX replacement point:
-    - If your ViperX API logs TCP pose directly, define the exact frame name:
-      is it the flange, wrist, tool tip, or camera mount?
-    - Then either return it directly if it already represents your calibration
-      "hand" frame, or multiply by a fixed TCP-to-hand transform.
-    - Avoid using the Panda IK/FK path here; load a ViperX model or use your own
-      frame transform convention.
+
+def load_mapping_metadata(mapping_path: str | Path) -> dict[str, Any]:
+    """Load the mapping JSON fields needed to reproduce capture-time FK."""
+
+    mapping_path = Path(mapping_path).expanduser().resolve()
+    with mapping_path.open("r", encoding="utf-8") as file:
+        metadata = json.load(file)
+    if not isinstance(metadata, dict):
+        raise ValueError(f"Mapping root must be a JSON object: {mapping_path}")
+
+    required = {"urdf_path", "joint_order", "base_link", "end_link"}
+    missing = required - set(metadata)
+    if missing:
+        raise ValueError(f"Mapping is missing solver metadata: {sorted(missing)}")
+    metadata["_source_path"] = str(mapping_path)
+    return metadata
+
+
+def resolve_urdf_path(
+    mapping_metadata: dict[str, Any],
+    urdf_path: str | Path | None,
+) -> Path:
+    """Resolve the capture-time URDF, requiring an override if it moved."""
+
+    if urdf_path is not None:
+        candidate = Path(urdf_path).expanduser()
+    else:
+        candidate = Path(str(mapping_metadata["urdf_path"])).expanduser()
+        if not candidate.is_absolute():
+            source_path = Path(str(mapping_metadata["_source_path"]))
+            candidate = source_path.parent / candidate
+
+    candidate = candidate.resolve()
+    if not candidate.is_file():
+        raise FileNotFoundError(
+            f"ViperX URDF file not found: {candidate}. "
+            "Pass --urdf with the local copy of the accepted full URDF."
+        )
+    return candidate
+
+
+def validate_joint_sample(
+    joints: Sequence[float],
+    expected_joint_count: int = EXPECTED_ARM_JOINT_COUNT,
+) -> np.ndarray:
+    """Validate one measured q sample without applying command-target limits."""
+
+    q_arm = np.asarray(joints, dtype=np.float64)
+    if q_arm.shape != (expected_joint_count,):
+        raise ValueError(
+            f"Expected measured joint shape {(expected_joint_count,)}, got {q_arm.shape}."
+        )
+    if not np.all(np.isfinite(q_arm)):
+        raise ValueError("Measured joints contain NaN or infinity.")
+    return q_arm
+
+
+def validate_model_contract(mapping: Any, model: Any) -> None:
+    """Require dataset mapping and ViperX model to describe the same FK chain."""
+
+    if tuple(mapping.joint_order) != tuple(model.arm_joint_names):
+        raise ValueError(
+            "Mapping/model joint_order mismatch: "
+            f"{tuple(mapping.joint_order)} != {tuple(model.arm_joint_names)}."
+        )
+    if mapping.base_link != model.base_link:
+        raise ValueError(
+            f"Mapping/model base_link mismatch: {mapping.base_link!r} != "
+            f"{model.base_link!r}."
+        )
+    if mapping.end_link != model.end_link:
+        raise ValueError(
+            f"Mapping/model end_link mismatch: {mapping.end_link!r} != "
+            f"{model.end_link!r}."
+        )
+    if int(model.n) != EXPECTED_ARM_JOINT_COUNT:
+        raise ValueError(
+            f"Expected a six-joint ViperX model, got model.n={model.n}."
+        )
+
+
+def joint_to_hand(joints: Sequence[float], model: Any) -> np.ndarray:
+    """Return measured ``T_base_hand`` for one six-joint shooting sample.
+
+    ``ViperXModel.fk`` correctly enforces limits for IK and command targets.
+    These joints are already measured states, so this read-only FK path checks
+    only shape/finite values and preserves an out-of-limit measurement for
+    diagnosis instead of discarding it.
     """
-    panda = rtb.models.Panda()
-    joints = panda.ik_LM(pose)[0]
-    hand_pose = panda.fkine(joints, end="panda_hand").A
-    return hand_pose
+
+    q_arm = validate_joint_sample(joints, expected_joint_count=int(model.n))
+    q_full = np.asarray(model.full_joint_defaults, dtype=np.float64).copy()
+    arm_joint_indices = tuple(model.arm_joint_indices)
+    if q_full.ndim != 1 or len(arm_joint_indices) != int(model.n):
+        raise ValueError("ViperX model has an invalid full-joint expansion contract.")
+    q_full[list(arm_joint_indices)] = q_arm
+
+    pose = model.robot_model.fkine(
+        q_full,
+        start=model.base_link,
+        end=model.end_link,
+    )
+    return model.validate_transform(getattr(pose, "A", pose))
 
 
-def joint_to_hand(joints):
-    """Convert logged Panda joint angles into a Panda hand-link pose.
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Solve ViperX hand-eye calibration from shooting data."
+    )
+    parser.add_argument(
+        "--data_root",
+        type=Path,
+        required=True,
+        help="ViperX shooting dataset root.",
+    )
+    parser.add_argument(
+        "--mapping",
+        type=Path,
+        default=None,
+        help=(
+            "Stage-4 mapping snapshot. Defaults to "
+            "<data_root>/configs/viperx_urdf_mapping.json."
+        ),
+    )
+    parser.add_argument(
+        "--urdf",
+        type=Path,
+        default=None,
+        help="Local accepted vx300s_full.urdf; overrides mapping metadata path.",
+    )
+    return parser.parse_args()
 
-    Why this path is preferred when available:
-    - Joint logs are usually the most reproducible source of robot state.
-    - Forward kinematics (FK) maps joint angles to an end-effector transform.
-    - The output frame is explicitly selected with ``end="panda_hand"``.
 
-    Input:
-    - ``joints``: Panda joint vector saved by the shooting notebook from
-      ``panda.get_log()["q"][-1]``.
+def main() -> None:
+    args = parse_args()
+    data_root = args.data_root.expanduser().resolve()
+    mapping_path = resolve_mapping_path(data_root, args.mapping)
+    mapping_metadata = load_mapping_metadata(mapping_path)
+    mapping = ViperXUrdfMapping.load(mapping_path)
+    urdf_path = resolve_urdf_path(mapping_metadata, args.urdf)
 
-    Output:
-    - 4x4 transform ``T_hand_to_base``. This is the pose of the hand/gripper
-      frame expressed in the robot base frame.
+    model = load_viperx_model(
+        urdf_path=urdf_path,
+        base_link=mapping.base_link,
+        end_link=mapping.end_link,
+    )
+    validate_model_contract(mapping, model)
 
-    ViperX replacement point:
-    - Replace ``rtb.models.Panda()`` with your ViperX kinematic model.
-    - Replace ``"panda_hand"`` with the ViperX link that you want to define as
-      the "hand" frame for calibration.
-    - Make sure the joint order, units, zero offsets, and link naming match the
-      values recorded by LeRobot or your ViperX driver.
-    """
-    panda = rtb.models.Panda()
-    hand_pose = panda.fkine(joints, end="panda_hand").A
-    return hand_pose
+    (
+        rgb_list,
+        _depth_list,
+        _saved_pose_list,
+        rgb_intrinsics,
+        rgb_coeffs,
+        _depth_intrinsics,
+        _depth_coeffs,
+        _depth_scale,
+        joints_list,
+    ) = read_data(data_root)
+
+    if rgb_list is None or not rgb_list:
+        raise ValueError(f"No RGB calibration images found under {data_root / 'rgb'}.")
+    if joints_list is None:
+        raise ValueError(
+            f"No measured ViperX joints found under {data_root / 'joints'}. "
+            "The Panda pose/TCP fallback is intentionally unsupported."
+        )
+    if len(rgb_list) != len(joints_list):
+        raise ValueError(
+            f"RGB/joint sample count mismatch: {len(rgb_list)} != {len(joints_list)}."
+        )
+    if rgb_intrinsics is None or rgb_coeffs is None:
+        raise ValueError(f"Missing RGB intrinsics under {data_root}.")
+
+    pose_list = [joint_to_hand(joints, model) for joints in joints_list]
+    print(f"mapping_path={mapping_path}")
+    print(f"urdf_path={urdf_path}")
+    print(f"joint_order={mapping.joint_order}")
+    print(f"base_link={mapping.base_link}")
+    print(f"end_link={mapping.end_link}")
+    print(f"{len(pose_list)} poses found")
+    print(f"Camera matrix: {rgb_intrinsics}")
+
+    # These parameters match the physical A4 ChArUco board generated by
+    # utils/generate_charuco_board.py: 180 mm board, 36 mm squares, 27 mm
+    # markers.  Pose translations are therefore estimated in metres.
+    charuco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
+    board = cv2.aruco.CharucoBoard(
+        CHARUCO_BOARD_SHAPE,
+        CHARUCO_SQUARE_LENGTH_M,
+        CHARUCO_MARKER_LENGTH_M,
+        charuco_dict,
+    )
+
+    calibrator = HandinEyeCalibrator(
+        rgb_intrinsics,
+        rgb_coeffs,
+        charuco_dict,
+        board,
+    )
+    R_cam2hand_avg, t_cam2hand_avg = calibrator.perform(rgb_list, pose_list)
+
+    print("Average Camera to hand rotation matrix:")
+    print(R_cam2hand_avg)
+    print("Average Camera to hand translation vector:")
+    print(t_cam2hand_avg)
+
+    cam_to_hand_pose = np.eye(4, dtype=np.float64)
+    cam_to_hand_pose[:3, :3] = R_cam2hand_avg
+    cam_to_hand_pose[:3, 3] = t_cam2hand_avg.squeeze()
+    cam_to_hand_pose = model.validate_transform(cam_to_hand_pose)
+    print(f"Camera to hand pose:\n{cam_to_hand_pose}")
+
+    output_path = data_root / "cam_to_hand_pose.npy"
+    np.save(output_path, cam_to_hand_pose)
+    print(f"saved={output_path}")
 
 
-# Read data from the calibration capture folder.
-#
-# Expected folder structure:
-#   base_dir/
-#     rgb/              RGB PNG images containing the ChArUco board
-#     depth/            depth .npy files, mainly for visualization/TSDF checks
-#     poses/            4x4 robot pose .npy files saved during capture
-#     joints/           optional joint .npy files saved during capture
-#     rgb_intrinsics.npz
-#     depth_intrinsics.npz
-#
-# The calibration solve only needs RGB images, RGB intrinsics, distortion
-# coefficients, and robot hand poses. Depth is loaded by ``read_data`` because
-# the notebook also uses it for point-cloud/TSDF visualization.
-import argparse
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--data_root", type=str, help="path to data root directory")
-args = parser.parse_args()
-base_dir = args.data_root
-(
-    rgb_list,
-    depth_list,
-    pose_list,
-    rgb_intrinsics,
-    rgb_coeffs,
-    depth_intrinsics,
-    depth_coeffs,
-    depth_scale,
-    joints_list,
-) = read_data(base_dir)
-
-# Convert the raw robot records into the exact pose convention required by
-# OpenCV:
-#   R_gripper2base, t_gripper2base
-#
-# In this repository "gripper" is effectively the Panda hand frame. For your
-# ViperX port, keep the downstream name if convenient, but make the semantic
-# quantity identical: ``T_hand_to_base`` for each captured image.
-if joints_list is not None:
-    # Preferred original path: use logged Panda joints and FK to the Panda hand.
-    # ViperX port: use ViperX FK from the logged ViperX joint vector.
-    pose_list = [joint_to_hand(joints) for joints in joints_list]
-else:
-    # Fallback original path: convert logged TCP pose to Panda hand pose via
-    # Panda IK + FK. This is more robot-specific and should be replaced for
-    # ViperX unless your recorded pose is already the desired hand frame.
-    pose_list = [tcp_to_hand(pose) for pose in pose_list]
-
-print(f"{len(rgb_list)} poses found")
-print(f"Camera matrix: {rgb_intrinsics}")
-
-# Build the ChArUco board model used in the images.
-#
-# ChArUco = ArUco markers + chessboard corners. ArUco IDs make detection robust,
-# while chessboard corners provide accurate sub-pixel geometry.
-#
-# Parameters here must match the physical printed board:
-# - DICT_6X6_250: ArUco dictionary family.
-# - (5, 5): number of chessboard squares in X and Y.
-# - 0.04: square length in meters.
-# - 0.03: marker length in meters.
-#
-# If your printed board differs, update these values before trusting the result.
-charuco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
-board = cv2.aruco.CharucoBoard((5, 5), 0.04, 0.03, charuco_dict)
-
-# ``HandinEyeCalibrator.perform`` detects the board in every RGB image and calls
-# ``cv2.calibrateHandEye`` with:
-# - robot motion: hand/gripper -> base
-# - vision motion: calibration target -> camera
-#
-# The returned transform is camera -> hand. It is fixed as long as the camera
-# mount does not move relative to the wrist/hand.
-calibrator = HandinEyeCalibrator(rgb_intrinsics, rgb_coeffs, charuco_dict, board)
-R_cam2hand_avg, t_cam2hand_avg = calibrator.perform(rgb_list, pose_list)
-
-print("Average Camera to hand rotation matrix:")
-print(R_cam2hand_avg)
-print("Average Camera to hand translation vector:")
-print(t_cam2hand_avg)
-
-# Pack rotation and translation into a standard 4x4 homogeneous transform.
-# This matrix maps a point represented in the camera frame into the hand frame:
-#
-#   p_hand = cam_to_hand_pose @ p_camera
-#
-# Downstream reconstruction/alignment code can then chain it with
-# ``T_hand_to_base`` to get camera poses in the robot base frame.
-cam_to_hand_pose = np.eye(4)
-cam_to_hand_pose[:3, :3] = R_cam2hand_avg
-cam_to_hand_pose[:3, 3] = t_cam2hand_avg.squeeze()
-print(f"Camera to hand pose:\n{cam_to_hand_pose}")
-
-# Saved artifact consumed by later calibration/alignment steps.
-# For ViperX, the filename can stay the same if your downstream code only cares
-# that it represents camera -> hand for your chosen ViperX hand frame.
-np.save(f"{base_dir}/cam_to_hand_pose.npy", cam_to_hand_pose)
+if __name__ == "__main__":
+    main()

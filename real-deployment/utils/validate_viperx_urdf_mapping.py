@@ -339,10 +339,10 @@ def show_pybullet_pose(
     try:
         p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client_id)
         p.resetDebugVisualizerCamera(
-            cameraDistance=1.1,
-            cameraYaw=45.0,
-            cameraPitch=-25.0,
-            cameraTargetPosition=[0.25, 0.0, 0.35],
+            cameraDistance=1.2,
+            cameraYaw=180,
+            cameraPitch=-20,
+            cameraTargetPosition=[0.0, 0.0, 0.25],
             physicsClientId=client_id,
         )
         p.loadURDF("plane.urdf", physicsClientId=client_id)
