@@ -44,12 +44,12 @@ NORMALIZED_POSITION_SPAN = 200.0
 EXPECTED_MAX_RELATIVE_TARGET = 5.0
 TORQUE_ON_BY_GOAL_UPDATE_BIT = 0b1000
 STARTUP_STAGING_Q_RAD = (
-    0.018408,
-    -1.293146,
-    1.201107,
-    0.012272,
-    0.493942,
-    0.006136,
+    -0.050621,
+    -1.000000,
+    0.971010,
+    0.115049,
+    0.535359,
+    0.000000,
 )
 
 
@@ -362,7 +362,7 @@ class ViperXAdapter:
         *,
         command_period_s: float = 0.05,
         motion_timeout_s: float = 10.0,
-        position_tolerance_rad: float = 0.03,
+        position_tolerance_rad: float = 0.05,
         settle_samples: int = 3,
         interactive_safety: bool = True,
     ) -> None:

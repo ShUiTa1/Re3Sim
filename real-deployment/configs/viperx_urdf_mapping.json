@@ -1,6 +1,6 @@
 {
   "base_link": "vx300s/base_link",
-  "created_at": "2026-07-17T21:06:10.417673+00:00",
+  "created_at": "2026-07-23T19:24:41.045935+00:00",
   "encoder_resolution": {
     "elbow": 4096,
     "forearm_roll": 4096,
@@ -34,12 +34,12 @@
     "wrist_rotate": 0.0
   },
   "raw_home": {
-    "elbow": 2404,
-    "forearm_roll": 2092,
-    "shoulder": 1964,
-    "waist": 2056,
-    "wrist_angle": 2244,
-    "wrist_rotate": 2171
+    "elbow": 2345,
+    "forearm_roll": 2028,
+    "shoulder": 1991,
+    "waist": 2062,
+    "wrist_angle": 2214,
+    "wrist_rotate": 2194
   },
   "safe_raw_range": {
     "elbow": {
@@ -88,7 +88,7 @@
     "elbow_shadow": {
       "encoder_resolution": 4096,
       "joint": "elbow",
-      "raw_home": 2029,
+      "raw_home": 1968,
       "safe_raw_range": {
         "max": 3049,
         "min": 670
@@ -99,7 +99,7 @@
     "shoulder_shadow": {
       "encoder_resolution": 4096,
       "joint": "shoulder",
-      "raw_home": 2103,
+      "raw_home": 2130,
       "safe_raw_range": {
         "max": 2914,
         "min": 875

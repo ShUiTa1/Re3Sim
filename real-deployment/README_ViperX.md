@@ -561,7 +561,7 @@ Choose the wrist-camera serial number explicitly. Replace
 /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python \
   /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/inspect_viperx_pose.py \
   --mapping=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json \
-  --camera-serial=WRIST_CAMERA_SERIAL
+  --camera-serial=218622276584
 ```
 
 Operation:
@@ -636,13 +636,14 @@ The fixed startup staging joint vector is:
 
 ```python
 STARTUP_STAGING_Q_RAD = (
-    0.018408,
-    -1.293146,
-    1.201107,
-    0.012272,
-    0.493942,
-    0.006136,
+    -0.050621,
+    -1.000000,
+    0.971010,
+    0.115049,
+    0.535359,
+    0.000000,
 )
+
 ```
 
 `connect()` reads all eight actuator positions and writes the exact same raw
@@ -712,7 +713,7 @@ Type MOVE to execute this live test:
 
 For an offline-only review, enter anything other than `MOVE`; the process exits
 before connecting hardware. For the first live acceptance, inspect the plan
-and physical workspace, then enter `MOVE`. Do not use `--yes` for the first
+and physical worfrom scipy.optimize import least_squareskspace, then enter `MOVE`. Do not use `--yes` for the first
 run.
 
 A normal live completion prints:

@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Sequence
+from scipy.optimize import least_squares
 
 import numpy as np
 
@@ -37,9 +38,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port")
     parser.add_argument("--robot-id")
     parser.add_argument("--calibration-dir", type=Path)
-    parser.add_argument("--heart-scale-m", type=float, default=0.0025)
-    parser.add_argument("--heart-samples", type=int, default=48)
-    parser.add_argument("--max-waypoint-step-rad", type=float, default=0.20)
+    parser.add_argument("--heart-scale-m", type=float, default=0.005)
+    parser.add_argument("--heart-samples", type=int, default=50)
+    parser.add_argument("--max-waypoint-step-rad", type=float, default=0.40)
     parser.add_argument("--yes", action="store_true")
     return parser.parse_args()
 
@@ -49,6 +50,71 @@ def mapping_metadata(path: Path) -> dict[str, Any]:
         return json.load(file)
 
 
+# def build_heart_waypoints(
+#     model: Any,
+#     q_start: Sequence[float],
+#     *,
+#     scale_m: float,
+#     samples: int,
+#     max_waypoint_step_rad: float,
+# ) -> list[np.ndarray]:
+#     if not np.isfinite(scale_m) or scale_m <= 0.0:
+#         raise ValueError("heart_scale_m must be finite and positive.")
+#     if samples < 12:
+#         raise ValueError("heart_samples must be at least 12.")
+#     if not np.isfinite(max_waypoint_step_rad) or max_waypoint_step_rad <= 0.0:
+#         raise ValueError("max_waypoint_step_rad must be finite and positive.")
+
+#     q_seed = np.asarray(model.validate_joints(q_start), dtype=np.float64)
+#     start_pose = np.asarray(model.fk(q_seed), dtype=np.float64)
+#     waypoints = [q_seed.copy()]
+#     angles = np.linspace(0.0, 2.0 * np.pi, samples, endpoint=True)
+#     for angle in angles[1:]:
+#         x = 16.0 * np.sin(angle) ** 3
+#         z = (
+#             13.0 * np.cos(angle)
+#             - 5.0 * np.cos(2.0 * angle)
+#             - 2.0 * np.cos(3.0 * angle)
+#             - np.cos(4.0 * angle)
+#             - 5.0
+#         )
+#         target_pose = start_pose.copy()
+#         target_pose[0, 3] += scale_m * x
+#         target_pose[2, 3] += scale_m * z
+#         result = model.ik(target_pose, q0_arm=q_seed)
+#         if not bool(result.success):
+#             raise RuntimeError(
+#                 f"Heart IK failed at angle={angle:.3f}: "
+#                 f"reason={result.reason!r}, residual={result.residual!r}"
+#             )
+#         q_next = np.asarray(model.validate_joints(result.q_arm), dtype=np.float64)
+#         joint_delta = q_next - q_seed
+#         abs_joint_delta = np.abs(joint_delta)
+#         step_index = int(np.argmax(abs_joint_delta))
+#         step = float(abs_joint_delta[step_index])
+
+#         if step > max_waypoint_step_rad:
+#             joint_details = "\n".join(
+#                 (
+#                     f"  {name}: "
+#                     f"previous={q_seed[index]:.6f}, "
+#                     f"next={q_next[index]:.6f}, "
+#                     f"delta={joint_delta[index]:+.6f} rad "
+#                     f"({np.rad2deg(joint_delta[index]):+.3f} deg)"
+#                 )
+#                 for index, name in enumerate(model.arm_joint_names)
+#             )
+
+#             raise RuntimeError(
+#                 f"Heart IK path is discontinuous at angle={angle:.3f}: "
+#                 f"max joint step={step:.4f} rad.\n"
+#                 f"largest_joint={model.arm_joint_names[step_index]}\n"
+#                 f"joint_deltas:\n{joint_details}"
+#             )
+#         waypoints.append(q_next)
+#         q_seed = q_next
+
+#     return waypoints
 def build_heart_waypoints(
     model: Any,
     q_start: Sequence[float],
@@ -64,10 +130,21 @@ def build_heart_waypoints(
     if not np.isfinite(max_waypoint_step_rad) or max_waypoint_step_rad <= 0.0:
         raise ValueError("max_waypoint_step_rad must be finite and positive.")
 
-    q_seed = np.asarray(model.validate_joints(q_start), dtype=np.float64)
-    start_pose = np.asarray(model.fk(q_seed), dtype=np.float64)
-    waypoints = [q_seed.copy()]
-    angles = np.linspace(0.0, 2.0 * np.pi, samples, endpoint=True)
+    q = np.asarray(model.validate_joints(q_start), dtype=np.float64)
+    start_xyz = np.asarray(model.fk(q), dtype=np.float64)[:3, 3]
+
+    names = tuple(model.arm_joint_names)
+    locked = [
+        names.index("forearm_roll"),
+        names.index("wrist_rotate"),
+    ]
+    free = [index for index in range(len(names)) if index not in locked]
+    locked_values = q[locked].copy()
+    lower, upper = model.qlim[:, free]
+
+    waypoints = [q.copy()]
+    angles = np.linspace(0.0, 2.0 * np.pi, samples)
+
     for angle in angles[1:]:
         x = 16.0 * np.sin(angle) ** 3
         z = (
@@ -77,27 +154,45 @@ def build_heart_waypoints(
             - np.cos(4.0 * angle)
             - 5.0
         )
-        target_pose = start_pose.copy()
-        target_pose[0, 3] += scale_m * x
-        target_pose[2, 3] += scale_m * z
-        result = model.ik(target_pose, q0_arm=q_seed)
-        if not bool(result.success):
+        target_xyz = start_xyz + scale_m * np.array([x, 0.0, z])
+
+        def position_error(q_free: np.ndarray) -> np.ndarray:
+            candidate = q.copy()
+            candidate[free] = q_free
+            candidate[locked] = locked_values
+            return np.asarray(model.fk(candidate))[:3, 3] - target_xyz
+
+        result = least_squares(
+            position_error,
+            q[free],
+            bounds=(lower, upper),
+            max_nfev=300,
+        )
+
+        q_next = q.copy()
+        q_next[free] = result.x
+        q_next[locked] = locked_values
+        q_next = np.asarray(model.validate_joints(q_next), dtype=np.float64)
+
+        error_m = float(np.linalg.norm(position_error(q_next[free])))
+        if not result.success or error_m > 1e-5:
             raise RuntimeError(
-                f"Heart IK failed at angle={angle:.3f}: "
-                f"reason={result.reason!r}, residual={result.residual!r}"
+                f"Heart position IK failed at angle={angle:.3f}: "
+                f"position_error={error_m:.6e} m."
             )
-        q_next = np.asarray(model.validate_joints(result.q_arm), dtype=np.float64)
-        step = float(np.max(np.abs(q_next - q_seed)))
-        if step > max_waypoint_step_rad:
+
+        delta = np.abs(q_next - q)
+        largest = int(np.argmax(delta))
+        if delta[largest] > max_waypoint_step_rad:
             raise RuntimeError(
-                f"Heart IK path is discontinuous at angle={angle:.3f}: "
-                f"max joint step={step:.4f} rad."
+                f"Heart path is discontinuous at angle={angle:.3f}: "
+                f"{names[largest]} step={delta[largest]:.4f} rad."
             )
+
         waypoints.append(q_next)
-        q_seed = q_next
+        q = q_next
 
     return waypoints
-
 
 def run_live(args: argparse.Namespace, mapping: ViperXUrdfMapping) -> None:
     if not sys.stdin.isatty():
