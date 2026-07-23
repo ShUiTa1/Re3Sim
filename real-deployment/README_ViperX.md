@@ -438,34 +438,156 @@ conda deactivate
 
 Use `inspect_viperx_pose.py` in the lab to inspect manually selected ViperX
 poses before defining shooting regions or automatic targets. It reuses the
-accepted Stage 4 mapping and the Stage 2 FK model to report:
+accepted Stage 4 mapping, the Stage 2 FK model, and one explicitly selected
+RealSense camera. Each snapshot reports:
 
 - raw encoder ticks for the six arm joints and two shadow motors;
 - the six mapped URDF joint angles in radians;
 - the end-effector XYZ position in metres, from `vx300s/base_link` to
   `vx300s/ee_gripper_link`;
 - warnings when the measured raw values or mapped joint angles are outside the
-  recorded ranges.
+  recorded ranges;
+- one aligned `640 x 480` RGB PNG and one `640 x 480` raw depth NPY from the
+  same camera frame pair.
 
-Open a new terminal and run:
+### Extend the Existing Calibration Environment Once
+
+Do not create another environment for pose inspection or the shooting
+notebook. Reuse the Stage 3/4/5 environment at:
+
+```text
+/data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib
+```
+
+The earlier setup already installs the editable LeRobot fork, NumPy, SciPy,
+OpenCV, Robotics Toolbox, and SpatialMath. Add only the camera-wrapper and
+Jupyter-kernel dependencies that were not included in that setup:
 
 ```bash
-cd /home/yuzzhu/Projects/Re3Sim_ViperX
-source /data/yuzzhu/Re3Sim_ViperX/tools/miniforge3/etc/profile.d/conda.sh
-conda activate /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib
+/data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python \
+  -m pip install \
+  --cache-dir=/data/yuzzhu/Re3Sim_ViperX/cache/pip \
+  "pyrealsense2>=2.55.1.6486,<2.57.0" \
+  open3d \
+  ipykernel
+```
 
-python /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/inspect_viperx_pose.py \
-  --mapping /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
+`open3d` is required at import time because the existing
+`calibration/realsense/realsense.py` module imports it, even though
+`inspect_viperx_pose.py` and the shooting notebook only use the module's RGB
+and depth capture methods. These two capture entry points only use basic OpenCV
+image conversion and writing; do not add a second OpenCV wheel solely for
+ArUco/ChArUco here.
+
+Verify the complete import chain without connecting the motor bus or camera:
+
+```bash
+/data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python - <<'PY'
+import cv2
+import ipykernel
+import lerobot
+import numpy
+import open3d
+import pyrealsense2
+import roboticstoolbox
+import scipy
+import spatialmath
+
+print("inspect_shooting_environment=PASS")
+PY
+```
+
+Then verify that the inspection entry point itself can load. `--help` exits
+before any hardware connection:
+
+```bash
+/data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python \
+  /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/inspect_viperx_pose.py \
+  --help
+```
+
+### Use the Same Environment as the Shooting Notebook Kernel
+
+The Jupyter server and the notebook kernel are separate processes. The lab
+launcher may start a system Jupyter server in a terminal and open Firefox; that
+is acceptable. The selected kernel, rather than the server process, determines
+which Python environment runs notebook cells.
+
+Register the existing calibration environment as a Jupyter kernel once:
+
+```bash
+/data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python \
+  -m ipykernel install \
+  --user \
+  --name=re3sim-viperx-calib \
+  --display-name="re3sim-viperx-calib"
+```
+
+This writes only a small kernel specification under the user's Jupyter data
+directory. It does not copy the environment into the NFS home and does not
+require `sudo`.
+
+After the automatic terminal and Firefox window open:
+
+1. Open `hand_in_eye_shooting_ViperX.ipynb`.
+2. Select `Kernel -> Change kernel -> re3sim-viperx-calib`.
+3. Run this environment-only cell before running the notebook imports:
+
+   ```python
+   import sys
+
+   expected = "/data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python"
+   print("kernel_python=", sys.executable)
+   assert sys.executable == expected, "Wrong Jupyter kernel selected."
+   print("shooting_kernel_environment=PASS")
+   ```
+
+The notebook currently carries a generic `python3` kernel name in its metadata,
+so the displayed notebook title or the fact that Firefox opened successfully
+does not prove that the calibration environment is active. The
+`sys.executable` check above is the acceptance criterion. If
+`re3sim-viperx-calib` does not appear in the kernel menu immediately after
+registration, stop and restart the Jupyter server, then reopen the notebook.
+Keep the server terminal open while using the notebook. The `Not Trusted`
+banner and Jupyter widget warnings are separate from kernel selection and do
+not replace the executable-path check. After the notebook has completed its
+normal robot/camera cleanup, use `Kernel -> Shut Down`, then stop the Jupyter
+server from its terminal with `Ctrl-C` twice.
+
+Choose the wrist-camera serial number explicitly. Replace
+`WRIST_CAMERA_SERIAL` below with the actual serial number, then run:
+
+```bash
+/data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python \
+  /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/inspect_viperx_pose.py \
+  --mapping=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json \
+  --camera-serial=WRIST_CAMERA_SERIAL
 ```
 
 Operation:
 
-1. Support the arm and manually place it at the pose to inspect.
+1. Support the arm, verify the selected serial belongs to the wrist camera, and
+   manually place the arm at the pose to inspect.
 2. Press `Enter`. The script connects to the motor bus, disables and verifies
-   torque, then prints the first snapshot.
+   torque, starts the selected camera at RGB/depth `640 x 480` and `30 fps`,
+   waits five seconds for warmup, then prints and captures the first snapshot.
 3. Move the torque-off arm to another supported pose and press `Enter` again.
-   Repeat as needed.
-4. Enter `E` and press `Enter` to disable torque again, disconnect, and exit.
+   Each press saves a new independent RGB/depth pair; no image stitching is
+   performed.
+4. Enter `E` and press `Enter` to stop the camera, disable torque again,
+   disconnect, and exit.
+
+Captured files are created under:
+
+```text
+/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/assets/
+  rgb_YYYYMMDD_HHMMSS_mmm.png
+  depth_YYYYMMDD_HHMMSS_mmm.npy
+```
+
+The RGB file is an ordinary PNG. The depth file contains the aligned raw
+RealSense depth array; use the camera depth scale when converting its values to
+metres.
 
 A normal exit ends with:
 
@@ -474,31 +596,25 @@ viperx_pose_inspection=EXITED_CLEANLY
 ```
 
 The script never enables torque and never writes `Goal_Position`. `Ctrl-C`,
-terminal EOF, and runtime exceptions also enter the torque-off disconnect path.
-An out-of-range snapshot is still printed for diagnosis, but its `WARNING`
-status means that pose must not be treated as a validated motion target.
+terminal EOF, and runtime exceptions also stop the camera and enter the
+torque-off disconnect path. An out-of-range snapshot is still printed for
+diagnosis, but its `WARNING` status means that pose must not be treated as a
+validated motion target.
 
 ## ViperX Adapter Live Validation
 
 This is the Stage 5 runbook for validating the accepted Stage 4 mapping through
 the `ViperXAdapter` command path.
 
-**Current status: Stage 5 is paused and not accepted. Do not enter `SHADOW` or
-`MOVE`, do not increase `--shadow-step-rad`, and do not run `--full-plan` until
-the measured-state limit handling and the motion-speed boundary described
-below have been corrected and reviewed.**
+**Current status: the startup-recovery adapter code and the single validation
+plan are implemented, but the complete live plan, intentional stop/release,
+and reconnect have not been accepted on hardware. Stage 5 therefore remains
+unaccepted.**
 
-The adapter now keeps its Re3Sim-facing state and action vectors at six arm
-joints while explicitly generating and writing eight actuator targets: the six
-main joints plus `shoulder_shadow` and `elbow_shadow`, each using its own
-`raw_home`, sign, scale, and raw range. No-hardware lifecycle checks passed for
-connect, eight-actuator hold, shadow motion, stop, and release.
-
-One lab run of the default small shadow test printed its PASS markers, but only
-after the operator lifted the arm enough to put the measured start pose inside
-the URDF limits. The movement was also visibly too fast. This result confirms
-that the explicit main/shadow command path can move; it does not accept startup
-state handling, speed safety, the full trajectory, or Stage 5 as a whole.
+The Re3Sim-facing state and action remain six arm joints. Every hardware write
+contains eight absolute actuator targets: the six main joints plus
+`shoulder_shadow` and `elbow_shadow`, with each shadow generated from its own
+Stage 4 mapping.
 
 ### 1. Enter the Lab Project and Environment
 
@@ -514,69 +630,70 @@ The `source` command is required once in each new terminal or SSH session
 before the first Conda command. It does not modify `~/.bashrc` and does not
 require `conda init`.
 
-### 2. Current Joint-Limit Boundary and Known Mismatch
+### 2. Startup Recovery Boundary
 
-URDF/RTB joint limits are mandatory for command targets, IK results, and every
-planned trajectory waypoint. A measured `Present_Position`, however, is a
-physical fact and must remain readable even when its converted q is outside a
-model limit. An out-of-limit measured start state must block ordinary motion
-and produce an exact diagnostic; it must not be discarded by a target-validation
-exception.
+The fixed startup staging joint vector is:
 
-The current adapter still calls target-limit validation while converting a
-measured state. That is why the lab test could start only after the arm was
-lifted into the URDF range.
-
-The accepted mapping and URDF currently contain these relevant ranges:
-
-| Joint | Calibration raw range converted to q | Project URDF limit |
-|---|---:|---:|
-| `shoulder` | approximately `[-107.84°, 71.10°]` | `[-106°, 72°]` |
-| `elbow` | approximately `[-118.56°, 90.44°]` | `[-101°, 92°]` |
-
-The calibration raw range records encoder positions observed during LeRobot
-calibration; it is not automatically a safe model range. Trossen's current
-[ViperX-300 6DOF specification](https://docs.trossenrobotics.com/interbotix_xsarms_docs/specifications/vx300s.html)
-describes the default joint limits as safe operating ranges and lists shoulder
-`[-101°, 101°]` and elbow `[-101°, 92°]`. The project shoulder URDF therefore
-needs a source/version audit, while the current elbow calibration range clearly
-extends below both the project URDF and the current manufacturer default.
-Neither discrepancy authorizes changing the accepted URDF limits merely to
-include a table-supported resting pose.
-
-### 3. Current Speed Issue
-
-`max_relative_target=5` limits the position change in one command; it is not a
-velocity limit. The default shadow test changes a joint by `0.05 rad`, about 33
-encoder ticks. This is smaller than the current shoulder/elbow per-command
-limit, so the final target is sent in one `Goal_Position` update. In that case,
-`command_period_s=0.05` does not create a slow interpolated trajectory.
-
-Neither the adapter nor the current LeRobot ViperX `configure()` path establishes
-an accepted `Profile_Velocity`/`Profile_Acceleration` setting or a software
-rad/s limit. Before the next live run, record all eight actuators' `Drive_Mode`,
-`Profile_Velocity`, `Profile_Acceleration`, and `Velocity_Limit` without changing
-them, then choose and verify one explicit speed-control boundary.
-
-### 4. Operations Allowed While Stage 5 Is Paused
-
-The Stage 4 mapping may still be validated offline without connecting to the
-robot:
-
-```bash
-/data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python \
-  /home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/utils/validate_viperx_urdf_mapping.py \
-  --mapping=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
+```python
+STARTUP_STAGING_Q_RAD = (
+    0.018408,
+    -1.293146,
+    1.201107,
+    0.012272,
+    0.493942,
+    0.006136,
+)
 ```
 
-Required result:
+`connect()` reads all eight actuator positions and writes the exact same raw
+values back as the initial hold. It does not move toward home.
+
+`prepare_for_motion()` is the only path that may read an initial mapped q
+outside the URDF limits. It uses the existing closed-loop incremental command
+logic to reach the fixed, strictly validated staging pose, while every raw
+write remains inside all eight calibration ranges. After staging, normal
+`read_joints()`, command targets, IK results, and waypoints all use strict
+URDF/RTB limit validation.
+
+This startup exception does not change URDF limits or `q=0`, Dynamixel
+configuration, or LeRobot calibration.
+
+### 3. Single Validation Plan
+
+The validation script has one plan:
 
 ```text
-validate_viperx_urdf_mapping=PASS
+offline:
+  startup staging -> mapping home -> waist absolute +40 degrees
+  -> base-XZ heart -> mapping home
+  -> validate every six-joint q and every eight-actuator raw target
+
+after MOVE:
+  connect and hold current eight raw values
+  -> prepare_for_motion()
+  -> go_home()
+  -> waist absolute +40 degrees
+  -> heart
+  -> go_home()
+  -> stop_motion()
+  -> await_release()
 ```
 
-The adapter's current default preflight can also be inspected without hardware
-connection:
+The waist target is an absolute `+40 degrees` value copied into the mapping
+home vector, not a relative addition to the current waist value. The heart is
+generated from that pose by ViperX IK. The script no longer contains a
+shadow-only mode, a separate full-plan flag, or current/PWM/hardware-status
+diagnostics.
+
+`max_relative_target=5` still means maximum change per command rather than a
+physical velocity limit. The current accepted design choice is to retain the
+adapter's measured-state closed loop, incremental raw/radian step, command
+period, arrival tolerance, and stable-sample check without adding a Dynamixel
+profile or a separate software rad/s layer at this stage.
+
+### 4. Run the Preflight and Live Gate
+
+Run:
 
 ```bash
 /data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python \
@@ -584,74 +701,50 @@ connection:
   --mapping=/home/yuzzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/configs/viperx_urdf_mapping.json
 ```
 
-It should print:
+Before any hardware object is created, it must print:
 
 ```text
-shadow_raw_plan_preflight=PASS
-live_plan=current_pose -> small_shoulder_check -> small_elbow_check -> current_pose
-Type SHADOW to execute this live test:
+raw_plan_preflight=PASS
+live_plan=startup_staging -> home -> waist_plus_40deg -> base_XZ_heart -> home
+heart_waypoints=...
+Type MOVE to execute this live test:
 ```
 
-Press `Enter` without typing `SHADOW`. The script exits before constructing or
-connecting the hardware robot. Do not use `--yes`.
+For an offline-only review, enter anything other than `MOVE`; the process exits
+before connecting hardware. For the first live acceptance, inspect the plan
+and physical workspace, then enter `MOVE`. Do not use `--yes` for the first
+run.
 
-The existing `--full-plan` preflight may be reviewed in the same way only if no
-one types `MOVE`; however, because the live full plan is explicitly paused,
-there is no current acceptance reason to run it.
+A normal live completion prints:
 
-### 5. Required Corrections Before the Next Live Run
+```text
+live_staging_home_waist_heart_home=PASS
+validate_viperx_adapter=PASS
+```
 
-1. Separate measured-state conversion from command-target validation.
-2. Make `read_joints()` return finite mapped q even when it is outside a URDF
-   limit.
-3. Before ordinary motion, print each start-state violation with the joint
-   name, measured value, limit, and excess; hold the exact eight-actuator start
-   raw and exit safely.
-4. Keep strict URDF/RTB limit checks for every commanded target, IK result, and
-   trajectory waypoint.
-5. Read and record the eight motors' profile and drive registers without
-   changing them.
-6. Add one explicit, reproducible speed boundary and verify that it reaches the
-   target without relying on `max_relative_target` as a velocity control.
-7. Preserve the current rule that URDF `q=0`, Dynamixel `Homing_Offset` and
-   `Drive_Mode`, and LeRobot calibration are not rewritten to absorb the
-   adapter mapping.
-
-Automatic recovery from an out-of-limit measured start is not part of the
-minimal correction. Initially, the system should report, hold, and exit. A
-low-speed recovery mode may be designed later as a separate operation.
-
-### 6. Stage 5 Acceptance Sequence After the Corrections
+### 5. Stage 5 Acceptance Sequence
 
 Run the following gates in order; a failed gate blocks all later gates:
 
 1. Offline mapping and eight-actuator conversion checks.
-2. Start-state tests on both an in-limit pose and a deliberately supported
-   out-of-limit pose. The latter must be reported without a motion command.
-3. A speed-limited default `SHADOW` run: shoulder pair out-and-back, then elbow
-   pair out-and-back. Review goal/present position, current, PWM, hardware
-   status, and mechanical behavior.
-4. A `--full-plan` offline-only preflight; exit at the `MOVE` prompt.
-5. One normal speed-limited full run:
-   `current -> home -> shoulder left 90 degrees -> approximately 8 cm base-XZ
-   heart -> home -> supported release`.
-6. A separate intentional interruption run: the first `Enter` or `Ctrl+C` must
+2. Review the staging, home, waist, heart, and return-home preflight at the
+   `MOVE` prompt.
+3. One normal complete run from the usual startup pose, including the initial
+   eight-actuator hold, startup recovery, home, waist, heart, return home, and
+   supported release.
+4. A separate intentional interruption run: the first `Enter` or `Ctrl+C` must
    stop and hold; after physical support, a second `Enter` must release torque
    and disconnect.
-7. One final full run to prove clean reconnect after the interruption.
+5. One final complete run to prove clean reconnect after the interruption.
 
-Stage 5 is accepted only when all seven gates pass. A PASS marker from the
-earlier conditional shadow run is retained as diagnostic progress, not as an
-acceptance result.
+Stage 5 is accepted only after all five gates pass on hardware.
 
 ## Boundary
 
 The offline ViperX kinematics and the six-joint Stage 4 raw-to-URDF mapping are
-accepted. The two independent shadow anchors are recorded, and one conditional
-small live run demonstrated that explicit eight-actuator commands can move the
-paired joints.
+accepted. The adapter startup recovery and the fixed validation plan are
+implemented. All hardware commands contain the two mapped shadow targets.
 
-Measured-start handling, command speed, the full live plan, deliberate
-stop/hold/release, and reconnect remain unaccepted. Stage 5 also does not
-establish general collision-free planning, camera extrinsics, hand-eye
-calibration quality, or policy deployment safety.
+The fixed full live plan, deliberate stop/hold/release, and reconnect remain
+unaccepted. Stage 5 also does not establish general collision-free planning,
+camera extrinsics, hand-eye calibration quality, or policy deployment safety.

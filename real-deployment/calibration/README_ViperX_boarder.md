@@ -98,11 +98,17 @@ Re3Sim/real-deployment/calibration/hand_in_eye_shooting_ViperX.ipynb
 该 notebook 只负责：
 
 ```text
-安全 q_target
-  -> ViperXAdapter 执行关节运动并等待稳定
+Stage 4 mapping + ViperXModel
+  -> 从固定 Cartesian regions 和随机姿态生成 IK q_target
+  -> 连接前预检 staging、anchor、全部 q_target 和八电机 raw target
+  -> 输入 CAPTURE 后 connect 原地保持
+  -> prepare_for_motion 到固定 staging
+  -> 移动到 anchor
+  -> ViperXAdapter 逐目标运动并等待稳定
   -> 腕部 RealSense 拍摄 RGB/depth
-  -> 读取同一静止姿态的 raw、q_rad、时间戳和 FK
+  -> 读取同一静止姿态的六主关节 raw、q_rad、时间戳和 FK
   -> 保存逐帧标定数据
+  -> 正常完成时返回 mapping home，再 stop/hold/release
 ```
 
 它不负责：
@@ -113,9 +119,11 @@ Re3Sim/real-deployment/calibration/hand_in_eye_shooting_ViperX.ipynb
 - 启动 Isaac Sim。
 - 把 LeRobot 归一化 `.pos` 当作弧度。
 
-正式采集时，相机必须刚性固定在腕部，且采集完成前不能重新安装或改变安装姿态。第一轮姿态使用人工审核过的关节目标列表，不依赖 IK 自动生成轨迹。
+正式采集时，相机必须刚性固定在腕部，且采集完成前不能重新安装或改变安装姿态。IK 只生成候选关节目标，不等于碰撞或线缆安全检查；完整计划必须先通过离线检查，并由操作者逐目标审核。
 
-当前状态：该 notebook 仍包含 `.pos`/rad 转换占位逻辑，尚未改为调用 `ViperXAdapter`，因此当前版本不能直接用于正式 ViperX 采集。
+当前状态：ViperX shooting 迁移代码已经写完，已使用 Stage 4 mapping、`ViperXModel` 和 `ViperXAdapter`，不再包含 `.pos`/rad 占位转换。代码仍未完成现场验收；`STAGE5_LIVE_ACCEPTED` 保持 `False`，腕部相机序列号、anchor/regions、打印板纸面尺寸与检测效果、目标物理安全、小样和正式数据均需在实验室确认。
+
+当前固定 ChArUco 参数为 5×5、`DICT_6X6_250`、整板 180×180 mm、方格 36 mm、marker 27 mm。生成文件已经打印，但纸面尺寸测量与实际相机检测仍需现场验收。
 
 ## 4. 回家后可以离线完成的内容
 
@@ -175,7 +183,7 @@ vx300s/ee_gripper_link
 
 `hand_in_eye_calib_ViperX.py` 负责 ViperX 数据和运动学边界；`calibration/hand_in_eye.py` 只负责通用 ChArUco 检测和 OpenCV hand-eye 求解，不应连接硬件或导入 LeRobot。
 
-当前状态：`hand_in_eye_calib_ViperX.py` 仍保留 Panda FK，需要替换为统一的 ViperX FK；通用求解器的失败样本筛选、有效样本下限和结果稳定性检查仍需补充。
+当前状态：`hand_in_eye_calib_ViperX.py` 的机器人边界迁移已经写完。它从数据集中的 mapping snapshot 恢复 joint order、URDF、base/end frame，读取六维 `q_rad`，使用 `ViperXModel` FK 和统一的 `vx300s/ee_gripper_link` hand frame，并使用 5×5、36/27 mm ChArUco 参数。尚未用正式 ViperX shooting 数据生成并验收 `cam_to_hand_pose.npy`；通用求解器的失败样本筛选、有效样本下限和结果稳定性检查仍需补充。
 
 ### 4.2 Marker-to-base 求解
 
@@ -258,21 +266,21 @@ T_base_mesh = T_base_marker @ T_marker_mesh
 
 ```text
 viperx_hand_eye/
-├── reconstruction/
-│   └── images/
-├── calibration/
-│   ├── rgb/
-│   ├── depth/
-│   ├── joints/
-│   ├── raw/
-│   ├── metadata/
-│   ├── rgb_intrinsics.npz
-│   └── depth_intrinsics.npz
+├── rgb/
+├── depth/
+├── poses/
+├── joints/
+├── raw/
+├── metadata/
 ├── configs/
-│   ├── left_follower.json
-│   └── viperx_urdf_mapping.json
+│   ├── <本次 LeRobot follower calibration JSON>
+│   └── <本次 Stage 4 mapping JSON>
+├── rgb_intrinsics.npz
+├── depth_intrinsics.npz
 └── capture_manifest.json
 ```
+
+这是 shooting notebook 当前实际写出的 hand-eye 数据根目录。`reconstruct.py` 使用的场景多视角照片属于独立支线，应另存到其输入目录的 `images/` 下，不嵌套进上述 hand-eye 数据集。
 
 逐帧最低信息：
 
@@ -280,18 +288,20 @@ viperx_hand_eye/
 - RGB 和 depth 文件名。
 - 相机时间戳。
 - 机器人状态读取时间戳。
-- 八电机 raw snapshot。
+- 六个主关节的 measured raw snapshot；这是当前 `get_obs()` 和逐帧 `raw_*.npy` 的实际数据契约。
 - 六关节 URDF `q_rad`。
 - `T_base_hand`。
 - 当前 mapping 文件标识和末端 frame。
 - 标定板检测是否成功可以在采集时记录，也可以回家后离线计算。
+
+运动命令边界与保存格式不同：每次 `Goal_Position` 写入都包含六个主关节和两个 shadow 的八电机目标，但 notebook 当前逐帧只保存六个主关节的实测 raw。
 
 离开实验室前检查：
 
 1. RGB、depth、joint、raw 和 metadata 的 frame id 一一对应。
 2. 随机打开若干 RGB，确认标定板清晰且没有严重模糊或遮挡。
 3. 相机内参文件存在，分辨率与实际图像一致。
-4. 保存本次使用的 calibration JSON、mapping JSON、URDF 和 board 参数。
+4. 确认 `configs/` 已复制本次 calibration JSON 和 mapping JSON，manifest 已记录相机、mapping、anchor/regions 和 target plan；board 参数另行核对并记录。本次使用的已验收 URDF 应在仓库或备份中可单独追溯，notebook 当前不会把 URDF 文件复制到数据目录。
 5. 确认腕部相机在整个采集过程中没有松动。
 6. 确认 marker、机器人 base 和场景在两类图片采集期间没有改变相对位置。
 7. 把 `/data/yuzzhu` 中不可替代的数据复制到有备份的允许位置。

@@ -43,6 +43,14 @@ RANGE_M100_100 = "range_m100_100"
 NORMALIZED_POSITION_SPAN = 200.0
 EXPECTED_MAX_RELATIVE_TARGET = 5.0
 TORQUE_ON_BY_GOAL_UPDATE_BIT = 0b1000
+STARTUP_STAGING_Q_RAD = (
+    0.018408,
+    -1.293146,
+    1.201107,
+    0.012272,
+    0.493942,
+    0.006136,
+)
 
 
 class ViperXMotionInterrupted(RuntimeError):
@@ -311,9 +319,17 @@ class ViperXUrdfMapping:
             {name: int(raw[index]) for index, name in enumerate(self.joint_order)}
         )
 
-    def rad_to_actuator_raw(self, q_rad: Sequence[float]) -> dict[str, int]:
-        q = self.validate_q(q_rad)
-        raw = self.rad_to_raw(q)
+    def _rad_to_actuator_raw_unchecked(self, q_rad: Sequence[float]) -> dict[str, int]:
+        q = np.asarray(q_rad, dtype=np.float64)
+        if q.shape != (len(self.joint_order),) or not np.all(np.isfinite(q)):
+            raise ValueError("Expected six finite URDF joint radians.")
+        raw_values = np.rint(
+            self.raw_home
+            + self.sign * (q - self.q_home_urdf) / self.scale_rad_per_tick
+        ).astype(np.int64)
+        raw = {
+            name: int(raw_values[index]) for index, name in enumerate(self.joint_order)
+        }
         shadow_q = q[self.shadow_joint_indices]
         shadow_q_home = self.q_home_urdf[self.shadow_joint_indices]
         shadow_raw = np.rint(
@@ -326,6 +342,9 @@ class ViperXUrdfMapping:
             {name: int(shadow_raw[index]) for index, name in enumerate(self.shadow_names)}
         )
         return self.validate_actuator_raw(raw)
+
+    def rad_to_actuator_raw(self, q_rad: Sequence[float]) -> dict[str, int]:
+        return self._rad_to_actuator_raw_unchecked(self.validate_q(q_rad))
 
 
 def load_viperx_urdf_mapping(path: str | Path) -> ViperXUrdfMapping:
@@ -659,6 +678,9 @@ class ViperXAdapter:
     def read_joints(self) -> FloatArray:
         return self.raw_to_rad(self.read_raw_joints())
 
+    def _read_joints_unchecked(self) -> FloatArray:
+        return np.asarray(self.mapping.raw_to_rad(self.read_raw_joints()), dtype=np.float64)
+
     def get_ee_pose(self) -> FloatArray:
         return np.asarray(self.model.fk(self.read_joints()), dtype=np.float64)
 
@@ -753,6 +775,7 @@ class ViperXAdapter:
         *,
         timeout_s: float | None = None,
         tolerance_rad: float | None = None,
+        allow_out_of_limit_start: bool = False,
     ) -> FloatArray:
         if not self.is_connected:
             raise RuntimeError("ViperX adapter is not connected.")
@@ -766,15 +789,30 @@ class ViperXAdapter:
         if not np.isfinite(tolerance) or tolerance <= 0.0:
             raise ValueError("tolerance_rad must be finite and positive.")
 
+        read_measured = (
+            self._read_joints_unchecked if allow_out_of_limit_start else self.read_joints
+        )
+        map_command = (
+            self.mapping._rad_to_actuator_raw_unchecked
+            if allow_out_of_limit_start
+            else self.mapping.rad_to_actuator_raw
+        )
+
         try:
             self._raise_if_stop_requested()
             deadline = time.monotonic() + timeout
             settled = 0
-            measured = self.read_joints()
+            measured = read_measured()
             while True:
                 self._raise_if_stop_requested()
                 error = target - measured
-                if np.max(np.abs(error)) <= tolerance:
+                arrived = bool(np.max(np.abs(error)) <= tolerance)
+                if allow_out_of_limit_start and arrived:
+                    try:
+                        self._validate_q(measured)
+                    except ValueError:
+                        arrived = False
+                if arrived:
                     settled += 1
                     if settled >= self.settle_samples:
                         return measured
@@ -783,7 +821,7 @@ class ViperXAdapter:
                     next_q = measured + np.clip(
                         error, -self.max_joint_step_rad, self.max_joint_step_rad
                     )
-                    self._write_raw_actuators(self.mapping.rad_to_actuator_raw(next_q))
+                    self._write_raw_actuators(map_command(next_q))
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.0:
@@ -793,10 +831,18 @@ class ViperXAdapter:
                         f"maximum joint error is {max_error:.6f} rad."
                     )
                 time.sleep(min(self.command_period_s, remaining))
-                measured = self.read_joints()
+                measured = read_measured()
         except (Exception, KeyboardInterrupt):
             self._handle_motion_failure()
             raise
+
+    def prepare_for_motion(self) -> FloatArray:
+        """Move from an unchecked startup state to the fixed in-limit staging pose."""
+
+        return self.move_joints(
+            STARTUP_STAGING_Q_RAD,
+            allow_out_of_limit_start=True,
+        )
 
     def move_ee(
         self,

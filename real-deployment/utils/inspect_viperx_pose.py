@@ -1,25 +1,33 @@
 #!/usr/bin/env python3
-"""Interactively inspect a torque-off ViperX pose from raw encoders.
+"""Inspect a torque-off ViperX pose and capture one wrist-camera frame pair.
 
 Each snapshot reports the Stage-4 raw encoder values, mapped URDF joint
-radians, and the Stage-2 FK end-effector position. The script never writes a
-position target or enables torque.
+radians, and the Stage-2 FK end-effector position, then saves one RGB/depth
+pair. The script never writes a position target or enables torque.
 """
 
 import argparse
+from datetime import datetime
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Sequence
 
+import cv2
 import numpy as np
 
 sys.dont_write_bytecode = True
 
 REAL_DEPLOYMENT_DIR = Path(__file__).resolve().parents[1]
+UTILS_DIR = Path(__file__).resolve().parent
 DEFAULT_MAPPING_PATH = REAL_DEPLOYMENT_DIR / "configs" / "viperx_urdf_mapping.json"
 DEFAULT_MPLCONFIGDIR = Path("/data/yuzzhu/Re3Sim_ViperX/cache/matplotlib")
+DEFAULT_ASSETS_DIR = UTILS_DIR / "assets"
+RGB_RESOLUTION = (640, 480)
+DEPTH_RESOLUTION = (640, 480)
+CAMERA_WARMUP_S = 5.0
 
 if str(REAL_DEPLOYMENT_DIR) not in sys.path:
     sys.path.insert(0, str(REAL_DEPLOYMENT_DIR))
@@ -27,6 +35,7 @@ if str(REAL_DEPLOYMENT_DIR) not in sys.path:
 from lerobot.robots.utils import make_robot_from_config
 from lerobot.robots.viperx.config_viperx import ViperXConfig
 
+from calibration.realsense.realsense import Camera, get_devices
 from viperx_adapter import ViperXUrdfMapping
 from viperx_model import load_viperx_model
 
@@ -34,6 +43,7 @@ from viperx_model import load_viperx_model
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mapping", type=Path, default=DEFAULT_MAPPING_PATH)
+    parser.add_argument("--camera-serial", required=True)
     return parser.parse_args()
 
 
@@ -140,11 +150,33 @@ def range_violations(
     return violations
 
 
+def capture_frame_pair(camera: Camera, output_dir: Path) -> tuple[Path, Path]:
+    rgb_image, depth_image = camera.shoot()
+    if rgb_image is None or depth_image is None:
+        raise RuntimeError("RealSense returned an incomplete RGB/depth frame pair.")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rgb_path = output_dir / f"rgb_{timestamp}.png"
+    depth_path = output_dir / f"depth_{timestamp}.npy"
+
+    bgr_image = cv2.cvtColor(np.asarray(rgb_image), cv2.COLOR_RGB2BGR)
+    if not cv2.imwrite(str(rgb_path), bgr_image):
+        raise IOError(f"Failed to save RGB image: {rgb_path}")
+    np.save(depth_path, np.asarray(depth_image))
+
+    print(f"rgb_saved={rgb_path}")
+    print(f"depth_saved={depth_path}")
+    return rgb_path, depth_path
+
+
 def print_snapshot(
     sample_index: int,
     robot: Any,
     model: Any,
     mapping: ViperXUrdfMapping,
+    camera: Camera,
+    output_dir: Path,
 ) -> None:
     ensure_torque_disabled(robot)
     raw = read_raw_actuators(robot, mapping.actuator_names)
@@ -190,6 +222,7 @@ def print_snapshot(
     print("urdf_limit_check=" + ("PASS" if not q_warnings else "WARNING"))
     for warning in q_warnings:
         print(f"  {warning}")
+    capture_frame_pair(camera, output_dir)
 
 
 def wait_for_start() -> bool:
@@ -203,18 +236,27 @@ def wait_for_start() -> bool:
         print("Use Enter to continue or E + Enter to exit.")
 
 
-def inspect_loop(robot: Any, model: Any, mapping: ViperXUrdfMapping) -> None:
+def inspect_loop(
+    robot: Any,
+    model: Any,
+    mapping: ViperXUrdfMapping,
+    camera: Camera,
+    output_dir: Path,
+) -> None:
     sample_index = 1
-    print_snapshot(sample_index, robot, model, mapping)
+    print_snapshot(sample_index, robot, model, mapping, camera, output_dir)
     while True:
-        answer = input("Press Enter for another snapshot, or E + Enter to exit: ").strip()
+        answer = input(
+            "Press Enter for another pose snapshot and camera capture, "
+            "or E + Enter to exit: "
+        ).strip()
         if answer.casefold() == "e":
             return
         if answer:
-            print("Use Enter for a snapshot or E + Enter to exit.")
+            print("Use Enter for a snapshot/capture or E + Enter to exit.")
             continue
         sample_index += 1
-        print_snapshot(sample_index, robot, model, mapping)
+        print_snapshot(sample_index, robot, model, mapping, camera, output_dir)
 
 
 def disconnect_torque_off(robot: Any) -> None:
@@ -239,24 +281,42 @@ def main() -> None:
     )
     robot = make_viperx_robot(mapping, metadata)
     validate_bus_contract(robot, mapping)
+    device_serials = get_devices()
+    if args.camera_serial not in device_serials:
+        raise RuntimeError(
+            f"RealSense {args.camera_serial!r} was not found; detected {device_serials}."
+        )
+    camera = Camera(args.camera_serial, RGB_RESOLUTION, DEPTH_RESOLUTION)
 
     print(f"mapping={mapping.source_path}")
     print(f"port={robot.bus.port}")
+    print(f"camera_serial={args.camera_serial}")
+    print(f"capture_dir={DEFAULT_ASSETS_DIR}")
     print("mode=read-only raw encoder inspection; Goal_Position is never written")
     if not wait_for_start():
         print("Exited before hardware connection.")
         return
 
+    camera_started = False
     try:
         robot.bus.connect()
         robot.bus.disable_torque(num_retry=5)
         ensure_torque_disabled(robot)
         print("torque_disabled=PASS")
-        inspect_loop(robot, model, mapping)
+        camera.start()
+        camera_started = True
+        camera.shoot()
+        time.sleep(CAMERA_WARMUP_S)
+        print("camera_warmup=PASS")
+        inspect_loop(robot, model, mapping, camera, DEFAULT_ASSETS_DIR)
     except (KeyboardInterrupt, EOFError):
-        print("\nExit requested; disabling torque and disconnecting.")
+        print("\nExit requested; stopping camera, disabling torque, and disconnecting.")
     finally:
-        disconnect_torque_off(robot)
+        try:
+            if camera_started:
+                camera.stop()
+        finally:
+            disconnect_torque_off(robot)
 
     print("viperx_pose_inspection=EXITED_CLEANLY")
 
