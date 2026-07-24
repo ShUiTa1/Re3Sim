@@ -361,6 +361,7 @@ class ViperXAdapter:
         mapping: ViperXUrdfMapping | str | Path,
         *,
         command_period_s: float = 0.05,
+        max_joint_speed_rad_s: float = 0.8,
         motion_timeout_s: float = 10.0,
         position_tolerance_rad: float = 0.05,
         settle_samples: int = 3,
@@ -377,21 +378,29 @@ class ViperXAdapter:
         self._validate_contract()
 
         self.command_period_s = float(command_period_s) # frequency of getting robot states and sending commands
+        self.max_joint_speed_rad_s = float(max_joint_speed_rad_s)
         self.motion_timeout_s = float(motion_timeout_s) # maximum time allowed for a motion to complete
         self.position_tolerance_rad = float(position_tolerance_rad) 
         self.settle_samples = int(settle_samples) # number of consecutive samples within tolerance to consider motion settled
         numeric_settings = (
             self.command_period_s,
+            self.max_joint_speed_rad_s,
             self.motion_timeout_s,
             self.position_tolerance_rad,
         )
         if not np.all(np.isfinite(numeric_settings)) or any(value <= 0 for value in numeric_settings):
-            raise ValueError("Motion periods, timeout, and tolerance must be finite and positive.")
+            raise ValueError(
+                "Motion period, speed, timeout, and tolerance must be finite and positive."
+            )
         if self.settle_samples <= 0:
             raise ValueError("settle_samples must be positive.")
 
         self.home_q_rad = self._validate_q(self.mapping.q_home_urdf)
         self.max_joint_step_raw, self.max_joint_step_rad = self._motion_step_limits()
+        self.max_command_step_rad = np.minimum(
+            self.max_joint_step_rad,
+            self.max_joint_speed_rad_s * self.command_period_s,
+        )
 
         self.interactive_safety = bool(interactive_safety)
         self._session_start_raw: dict[str, int] | None = None
@@ -819,7 +828,7 @@ class ViperXAdapter:
                 else:
                     settled = 0
                     next_q = measured + np.clip(
-                        error, -self.max_joint_step_rad, self.max_joint_step_rad
+                        error, -self.max_command_step_rad, self.max_command_step_rad
                     )
                     self._write_raw_actuators(map_command(next_q))
 

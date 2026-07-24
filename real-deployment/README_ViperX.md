@@ -1,4 +1,4 @@
-# Re3Sim Real Deployment
+完# Re3Sim Real Deployment
 
 This directory contains Re3Sim-side real robot and calibration entry points.
 ViperX-specific runtime logic belongs here, while `viperx_asset` remains a pure
@@ -437,7 +437,7 @@ conda deactivate
 ## Torque-Off ViperX Pose Inspection
 
 Use `inspect_viperx_pose.py` in the lab to inspect manually selected ViperX
-poses before defining shooting regions or automatic targets. It reuses the
+poses before defining shooting q centers or automatic targets. It reuses the
 accepted Stage 4 mapping, the Stage 2 FK model, and one explicitly selected
 RealSense camera. Each snapshot reports:
 
@@ -535,7 +535,7 @@ After the automatic terminal and Firefox window open:
 
    ```python
    import sys
-
+   
    expected = "/data/yuzzhu/Re3Sim_ViperX/envs/re3sim-viperx-calib/bin/python"
    print("kernel_python=", sys.executable)
    assert sys.executable == expected, "Wrong Jupyter kernel selected."
@@ -595,21 +595,45 @@ A normal exit ends with:
 viperx_pose_inspection=EXITED_CLEANLY
 ```
 
+Lab status: the selected wrist-camera parameters, repeated RGB/depth capture
+and save path, and manual staging/anchor pose-selection workflow have been
+confirmed. The tool remains diagnostic: a saved pose is not automatically a
+safe motion target.
+
 The script never enables torque and never writes `Goal_Position`. `Ctrl-C`,
 terminal EOF, and runtime exceptions also stop the camera and enter the
 torque-off disconnect path. An out-of-range snapshot is still printed for
 diagnosis, but its `WARNING` status means that pose must not be treated as a
 validated motion target.
 
+### Current Shooting Target Plan
+
+`hand_in_eye_shooting_ViperX.ipynb` no longer generates Cartesian regions and
+solves IK for each capture target. It now starts from manually reviewed
+`Q_CENTERS_RAD`. For each center it generates `SAMPLES_PER_CENTER=10` targets;
+each target randomly selects `JOINTS_PER_SAMPLE=3` joints without replacement,
+perturbs only those joints within `Q_DELTA_MAX_RAD`, validates the six-joint q
+and all eight actuator raw targets, and uses ViperX FK only to record the
+corresponding target pose.
+
+The current per-joint perturbation limits are
+`[2, 2, 2, 4, 3, 4] degrees`. After `move_joints()` reports arrival, the
+notebook waits `CAPTURE_SETTLE_S=1.5 s` before taking the RGB/depth frame.
+`WRIST_CAMERA_SERIAL`, `ANCHOR_Q_RAD`, and `STAGE5_LIVE_ACCEPTED=True` are
+currently filled, but the repository's `Q_CENTERS_RAD` still contains only the
+anchor. Add the remaining four or five manually reviewed centers and run a
+small capture before collecting the formal dataset.
+
 ## ViperX Adapter Live Validation
 
 This is the Stage 5 runbook for validating the accepted Stage 4 mapping through
 the `ViperXAdapter` command path.
 
-**Current status: the startup-recovery adapter code and the single validation
-plan are implemented, but the complete live plan, intentional stop/release,
-and reconnect have not been accepted on hardware. Stage 5 therefore remains
-unaccepted.**
+**Current status: the fixed live plan has run as intended in the lab, including
+the normal final stop/hold/release path. A deliberate Enter/Ctrl+C interruption
+and a reconnect run have not been reported as separately accepted. The later
+default `0.8 rad/s` software command-step limit has passed an offline check but
+still needs a hardware speed check.**
 
 The Re3Sim-facing state and action remain six arm joints. Every hardware write
 contains eight absolute actuator targets: the six main joints plus
@@ -687,10 +711,13 @@ shadow-only mode, a separate full-plan flag, or current/PWM/hardware-status
 diagnostics.
 
 `max_relative_target=5` still means maximum change per command rather than a
-physical velocity limit. The current accepted design choice is to retain the
-adapter's measured-state closed loop, incremental raw/radian step, command
-period, arrival tolerance, and stable-sample check without adding a Dynamixel
-profile or a separate software rad/s layer at this stage.
+physical velocity limit. The adapter now also exposes
+`max_joint_speed_rad_s`, defaulting to `0.8 rad/s`. With the default
+`command_period_s=0.05 s`, the speed-derived command step is `0.04 rad`; the
+effective per-joint step is the smaller of that value and the existing
+raw/radian step derived from `max_relative_target`. This is a software
+measured-state command limit, not a Dynamixel velocity profile or a strict
+physical motor-speed guarantee.
 
 ### 4. Run the Preflight and Live Gate
 
@@ -713,7 +740,7 @@ Type MOVE to execute this live test:
 
 For an offline-only review, enter anything other than `MOVE`; the process exits
 before connecting hardware. For the first live acceptance, inspect the plan
-and physical worfrom scipy.optimize import least_squareskspace, then enter `MOVE`. Do not use `--yes` for the first
+and physical workspace, then enter `MOVE`. Do not use `--yes` for the first
 run.
 
 A normal live completion prints:
@@ -743,9 +770,10 @@ Stage 5 is accepted only after all five gates pass on hardware.
 ## Boundary
 
 The offline ViperX kinematics and the six-joint Stage 4 raw-to-URDF mapping are
-accepted. The adapter startup recovery and the fixed validation plan are
-implemented. All hardware commands contain the two mapped shadow targets.
-
-The fixed full live plan, deliberate stop/hold/release, and reconnect remain
-unaccepted. Stage 5 also does not establish general collision-free planning,
-camera extrinsics, hand-eye calibration quality, or policy deployment safety.
+accepted. The adapter startup recovery, fixed live plan, normal
+stop/hold/release, and eight-actuator command path have been confirmed on
+hardware. Deliberate interruption/release and reconnect remain separate
+unaccepted checks; the new default `0.8 rad/s` software limit also still needs
+a hardware speed check. Stage 5 does not establish general collision-free
+planning, camera extrinsics, hand-eye calibration quality, or policy
+deployment safety.
