@@ -361,7 +361,7 @@ class ViperXAdapter:
         mapping: ViperXUrdfMapping | str | Path,
         *,
         command_period_s: float = 0.05,
-        max_joint_speed_rad_s: float = 0.8,
+        max_joint_speed_rad_s: float = 1.5,
         motion_timeout_s: float = 10.0,
         position_tolerance_rad: float = 0.05,
         settle_samples: int = 3,
