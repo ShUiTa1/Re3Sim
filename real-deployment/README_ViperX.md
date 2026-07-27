@@ -1,4 +1,4 @@
-完# Re3Sim Real Deployment
+# Re3Sim Real Deployment
 
 This directory contains Re3Sim-side real robot and calibration entry points.
 ViperX-specific runtime logic belongs here, while `viperx_asset` remains a pure
@@ -617,12 +617,61 @@ and all eight actuator raw targets, and uses ViperX FK only to record the
 corresponding target pose.
 
 The current per-joint perturbation limits are
-`[2, 2, 2, 4, 3, 4] degrees`. After `move_joints()` reports arrival, the
+`[3, 3, 3, 5, 3, 4] degrees`. After `move_joints()` reports arrival, the
 notebook waits `CAPTURE_SETTLE_S=1.5 s` before taking the RGB/depth frame.
 `WRIST_CAMERA_SERIAL`, `ANCHOR_Q_RAD`, and `STAGE5_LIVE_ACCEPTED=True` are
-currently filled, but the repository's `Q_CENTERS_RAD` still contains only the
-anchor. Add the remaining four or five manually reviewed centers and run a
-small capture before collecting the formal dataset.
+filled, and `Q_CENTERS_RAD` contains six manually reviewed centers.
+
+Stage 6 has been accepted on hardware. The complete plan ran from startup
+through normal cleanup and produced 60 frames: six centers with ten
+three-joint perturbation samples per center. The RGB, depth, measured joints,
+measured raw values, FK poses, metadata, intrinsics, mapping/calibration
+snapshots, and manifest were checked as a consistent dataset.
+
+The notebook's lab output remains:
+
+```text
+/data/yuzzhu/Re3Sim_ViperX/data/viperx_hand_eye
+```
+
+The current home-machine copy is stored at:
+
+```text
+/home/kienzhu/Projects/Re3Sim_ViperX/Re3Sim/real-deployment/calibration/data/viperx_hand_eye
+```
+
+This home archive does not change the lab `DATA_ROOT`.
+
+After correcting the Stage 7/8 color-to-gray paths, the current dataset has 52
+detectable ChArUco poses. Frames `20, 21, 22, 24, 25, 27, 28, 29` do not
+provide enough corners. Shooting remains accepted as a hardware and data-format
+building block.
+
+Stage 7 now skips failed RGB/robot-pose pairs synchronously and drops any
+capture center with fewer than seven detected frames. Stage 8 applies the same
+center gate and writes global, per-center, and per-frame diagnostics to
+`marker_2_base_analysis.json`. The current run dropped center 2, used 50/60
+frames, and produced both `cam_to_hand_pose.npy` and `marker_2_base.npy`.
+
+The current Stage 8 consistency baseline is:
+
+- translation residual mean `13.859 mm`, p95 `19.923 mm`;
+- rotation residual mean `1.583 degrees`, p95 `2.824 degrees`.
+
+These residuals measure dispersion around the current mean marker pose; they
+are not ground-truth calibration error. The current `.npy` files are therefore
+a runnable baseline, not final accuracy acceptance.
+
+Before the next lab capture, use `inspect_viperx_pose.py` to replace
+`Q_CENTERS_RAD` with manually reviewed safe centers that provide broader
+camera/end-effector orientation coverage: front, left/right tilt, up/down tilt,
+and moderate rotation about the optical axis, while keeping the complete board
+clear and leaving room for local joint perturbations. Do not improve the plan
+only by taking more nearly duplicate frames around the existing centers. The
+exact number of centers and samples per center remains a field decision.
+
+After backing up the new dataset, rerun Stage 7 and Stage 8 and compare the
+resulting transforms and `marker_2_base_analysis.json` against this baseline.
 
 ## ViperX Adapter Live Validation
 
@@ -631,9 +680,9 @@ the `ViperXAdapter` command path.
 
 **Current status: the fixed live plan has run as intended in the lab, including
 the normal final stop/hold/release path. A deliberate Enter/Ctrl+C interruption
-and a reconnect run have not been reported as separately accepted. The later
-default `0.8 rad/s` software command-step limit has passed an offline check but
-still needs a hardware speed check.**
+and a reconnect run have not been reported as separately accepted. The current
+default `1.5 rad/s` software command-step limit was used by the subsequently
+accepted complete shooting run.**
 
 The Re3Sim-facing state and action remain six arm joints. Every hardware write
 contains eight absolute actuator targets: the six main joints plus
@@ -712,8 +761,8 @@ diagnostics.
 
 `max_relative_target=5` still means maximum change per command rather than a
 physical velocity limit. The adapter now also exposes
-`max_joint_speed_rad_s`, defaulting to `0.8 rad/s`. With the default
-`command_period_s=0.05 s`, the speed-derived command step is `0.04 rad`; the
+`max_joint_speed_rad_s`, currently defaulting to `1.5 rad/s`. With the default
+`command_period_s=0.05 s`, the speed-derived command step is `0.075 rad`; the
 effective per-joint step is the smaller of that value and the existing
 raw/radian step derived from `max_relative_target`. This is a software
 measured-state command limit, not a Dynamixel velocity profile or a strict
@@ -773,7 +822,7 @@ The offline ViperX kinematics and the six-joint Stage 4 raw-to-URDF mapping are
 accepted. The adapter startup recovery, fixed live plan, normal
 stop/hold/release, and eight-actuator command path have been confirmed on
 hardware. Deliberate interruption/release and reconnect remain separate
-unaccepted checks; the new default `0.8 rad/s` software limit also still needs
-a hardware speed check. Stage 5 does not establish general collision-free
-planning, camera extrinsics, hand-eye calibration quality, or policy
-deployment safety.
+unaccepted checks. The current default `1.5 rad/s` software limit has been used
+by the accepted Stage 6 capture path. Stage 5 does not establish general
+collision-free planning, camera extrinsics, hand-eye calibration quality, or
+policy deployment safety.

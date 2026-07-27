@@ -47,6 +47,33 @@ DEFAULT_MAPPING_FILENAME = "viperx_urdf_mapping.json"
 CHARUCO_BOARD_SHAPE = (5, 5)
 CHARUCO_SQUARE_LENGTH_M = 0.036
 CHARUCO_MARKER_LENGTH_M = 0.027
+MIN_VALID_SAMPLES_PER_CENTER = 7
+
+
+def load_rgb_frame_ids(data_root: str | Path) -> list[int]:
+    """Return frame IDs in the same filename order used by ``read_data``."""
+
+    rgb_dir = Path(data_root).expanduser().resolve() / "rgb"
+    if not rgb_dir.is_dir():
+        raise FileNotFoundError(f"RGB calibration directory not found: {rgb_dir}")
+
+    rgb_paths = sorted(
+        (
+            path
+            for path in rgb_dir.iterdir()
+            if path.is_file() and path.suffix == ".png"
+        ),
+        key=lambda path: path.name,
+    )
+    frame_ids = []
+    for path in rgb_paths:
+        try:
+            frame_ids.append(int(path.stem))
+        except ValueError as exc:
+            raise ValueError(
+                f"RGB calibration filename must be <integer>.png: {path.name}"
+            ) from exc
+    return frame_ids
 
 
 def resolve_mapping_path(
@@ -243,6 +270,25 @@ def main() -> None:
     if rgb_intrinsics is None or rgb_coeffs is None:
         raise ValueError(f"Missing RGB intrinsics under {data_root}.")
 
+    frame_ids = load_rgb_frame_ids(data_root)
+    manifest_path = data_root / "capture_manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Capture manifest not found: {manifest_path}")
+    with manifest_path.open("r", encoding="utf-8") as file:
+        manifest = json.load(file)
+    samples_per_center = int(manifest["samples_per_center"])
+    q_centers = manifest["q_centers_rad"]
+    if samples_per_center <= 0 or not isinstance(q_centers, list) or not q_centers:
+        raise ValueError(
+            "capture_manifest must contain positive samples_per_center and "
+            "non-empty q_centers_rad."
+        )
+    sample_center_ids = [
+        frame_id // samples_per_center for frame_id in frame_ids
+    ]
+    if any(center_id >= len(q_centers) for center_id in sample_center_ids):
+        raise ValueError("RGB frame IDs exceed the centers recorded in the manifest.")
+
     pose_list = [joint_to_hand(joints, model) for joints in joints_list]
     print(f"mapping_path={mapping_path}")
     print(f"urdf_path={urdf_path}")
@@ -269,7 +315,13 @@ def main() -> None:
         charuco_dict,
         board,
     )
-    R_cam2hand_avg, t_cam2hand_avg = calibrator.perform(rgb_list, pose_list)
+    R_cam2hand_avg, t_cam2hand_avg = calibrator.perform(
+        rgb_list,
+        pose_list,
+        sample_ids=frame_ids,
+        sample_center_ids=sample_center_ids,
+        min_valid_samples_per_center=MIN_VALID_SAMPLES_PER_CENTER,
+    )
 
     print("Average Camera to hand rotation matrix:")
     print(R_cam2hand_avg)
