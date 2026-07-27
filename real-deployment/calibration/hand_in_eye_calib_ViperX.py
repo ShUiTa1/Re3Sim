@@ -47,7 +47,7 @@ DEFAULT_MAPPING_FILENAME = "viperx_urdf_mapping.json"
 CHARUCO_BOARD_SHAPE = (5, 5)
 CHARUCO_SQUARE_LENGTH_M = 0.036
 CHARUCO_MARKER_LENGTH_M = 0.027
-MIN_VALID_SAMPLES_PER_CENTER = 7
+MIN_VALID_SAMPLES_PER_CENTER = 1
 
 
 def load_rgb_frame_ids(data_root: str | Path) -> list[int]:
