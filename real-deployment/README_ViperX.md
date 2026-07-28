@@ -610,23 +610,23 @@ validated motion target.
 
 `hand_in_eye_shooting_ViperX.ipynb` no longer generates Cartesian regions and
 solves IK for each capture target. It now starts from manually reviewed
-`Q_CENTERS_RAD`. For each center it generates `SAMPLES_PER_CENTER=10` targets;
-each target randomly selects `JOINTS_PER_SAMPLE=3` joints without replacement,
+`Q_CENTERS_RAD`. The current notebook contains 11 centers and generates
+`SAMPLES_PER_CENTER=5` targets per center; each target randomly selects
+`JOINTS_PER_SAMPLE=5` joints without replacement,
 perturbs only those joints within `Q_DELTA_MAX_RAD`, validates the six-joint q
 and all eight actuator raw targets, and uses ViperX FK only to record the
 corresponding target pose.
 
 The current per-joint perturbation limits are
 `[3, 3, 3, 5, 3, 4] degrees`. After `move_joints()` reports arrival, the
-notebook waits `CAPTURE_SETTLE_S=1.5 s` before taking the RGB/depth frame.
+notebook waits `CAPTURE_SETTLE_S=3.0 s` before taking the RGB/depth frame.
 `WRIST_CAMERA_SERIAL`, `ANCHOR_Q_RAD`, and `STAGE5_LIVE_ACCEPTED=True` are
-filled, and `Q_CENTERS_RAD` contains six manually reviewed centers.
+filled.
 
-Stage 6 has been accepted on hardware. The complete plan ran from startup
-through normal cleanup and produced 60 frames: six centers with ten
-three-joint perturbation samples per center. The RGB, depth, measured joints,
-measured raw values, FK poses, metadata, intrinsics, mapping/calibration
-snapshots, and manifest were checked as a consistent dataset.
+The Stage 6 joint-space/FK, eight-actuator motion, camera, and save path have
+been accepted on hardware. The current home dataset contains 55 frames from
+11 manually reviewed centers with five five-joint perturbation samples per
+center and a 3.0-second settle time.
 
 The notebook's lab output remains:
 
@@ -642,25 +642,23 @@ The current home-machine copy is stored at:
 
 This home archive does not change the lab `DATA_ROOT`.
 
-After correcting the Stage 7/8 color-to-gray paths, the current dataset has 52
-detectable ChArUco poses. Frames `20, 21, 22, 24, 25, 27, 28, 29` do not
-provide enough corners. Shooting remains accepted as a hardware and data-format
-building block.
+The current dataset has 54/55 detectable ChArUco poses; only frame `27` does
+not provide enough corners. Stage 7 skips failed RGB/robot-pose pairs
+synchronously. Stage 7 and Stage 8 currently use
+`MIN_VALID_SAMPLES_PER_CENTER=1`, so no center is dropped. Both
+`cam_to_hand_pose.npy` and `marker_2_base.npy` were generated from 54 frames.
 
-Stage 7 now skips failed RGB/robot-pose pairs synchronously and drops any
-capture center with fewer than seven detected frames. Stage 8 applies the same
-center gate and writes global, per-center, and per-frame diagnostics to
-`marker_2_base_analysis.json`. The current run dropped center 2, used 50/60
-frames, and produced both `cam_to_hand_pose.npy` and `marker_2_base.npy`.
+The current Stage 8 calculation is:
 
-The current Stage 8 consistency baseline is:
+- translation residual mean `14.203 mm`, p95 `23.889 mm`;
+- rotation residual mean `2.037 degrees`, p95 `3.212 degrees`.
 
-- translation residual mean `13.859 mm`, p95 `19.923 mm`;
-- rotation residual mean `1.583 degrees`, p95 `2.824 degrees`.
+The EPFL-compatible in-sample calculation reports `total_error=0.0076057`,
+translation mean absolute XYZ `[5.240, 11.421, 5.274] mm`, and rotation mean
+absolute ZYX `[1.142, 0.836, 1.182] degrees`.
 
 These residuals measure dispersion around the current mean marker pose; they
-are not ground-truth calibration error. The current `.npy` files are therefore
-a runnable baseline, not final accuracy acceptance.
+are not ground-truth calibration error.
 
 Before the next lab capture, use `inspect_viperx_pose.py` to replace
 `Q_CENTERS_RAD` with manually reviewed safe centers that provide broader
@@ -670,8 +668,13 @@ clear and leaving room for local joint perturbations. Do not improve the plan
 only by taking more nearly duplicate frames around the existing centers. The
 exact number of centers and samples per center remains a field decision.
 
-After backing up the new dataset, rerun Stage 7 and Stage 8 and compare the
-resulting transforms and `marker_2_base_analysis.json` against this baseline.
+Save the next capture in a separate directory before rerunning Stage 7, Stage
+8, and `analyze_hand_eye_fit_ViperX.py`. Compare detection completeness,
+in-sample fit, within-center and between-center consistency, transform
+stability, and physical direction. If the new data does not improve the result
+materially and the current physical-direction check is sound, the current
+`.npy` files may be selected to continue reconstruction and scene alignment;
+that selection is not a claim of ground-truth accuracy.
 
 ## ViperX Adapter Live Validation
 
