@@ -364,7 +364,7 @@ class ViperXAdapter:
         max_joint_speed_rad_s: float = 1.0,
         motion_timeout_s: float = 10.0,
         position_tolerance_rad: float = 0.05,
-        settle_samples: int = 5,
+        settle_samples: int = 3,
         interactive_safety: bool = True,
     ) -> None:
         self.robot = robot
