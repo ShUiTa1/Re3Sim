@@ -14,7 +14,7 @@ import json
 import cv2
 
 charuco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
-board = cv2.aruco.CharucoBoard((5, 5), 0.04, 0.03, charuco_dict)
+board = cv2.aruco.CharucoBoard((5, 5), 0.036, 0.027, charuco_dict)
 
 
 def process_polycam_data(

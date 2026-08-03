@@ -132,6 +132,59 @@ Stage 4 mapping + ViperXModel
 
 下一轮实验室重采的目标不是在原中心附近简单增加重复照片，而是使用 `inspect_viperx_pose.py` 重新选择安全且方向覆盖更丰富的 q centers：在标定板完整清晰的前提下，覆盖正面、左右倾斜、上下倾斜和适量绕相机光轴旋转，并兼顾不同位置和距离。新数据必须保存到独立目录并完整备份，不能先覆盖当前数据再比较。
 
+### 3.4 固定顶部 RealSense 外参标定
+
+入口：
+
+```text
+Re3Sim/real-deployment/utils/calibrate_fixed_realsense_to_base.py
+```
+
+这一步直接在实验室宿主机上、使用前面运行 RealSense 脚本的 Python 环境执行；不需要 Docker，也不需要连接或移动 ViperX。标定前要求：
+
+- 顶部相机、marker 和机器人 base 均已固定，三者关系不再变化。
+- `calibration/data/viperx_hand_eye/marker_2_base.npy` 已存在，且对应当前 marker/base 关系。
+- 顶部相机能清晰、完整地看到同一块 5×5 ChArUco 板。
+
+从 `real-deployment` 目录运行。只接入一台 RealSense 时：
+
+```bash
+python utils/calibrate_fixed_realsense_to_base.py
+```
+
+同时接入多台 RealSense 时，必须指定顶部相机序列号：
+
+```bash
+python utils/calibrate_fixed_realsense_to_base.py --serial <TOP_CAMERA_SERIAL>
+```
+
+不指定 `--serial` 时，如果脚本检测到多台相机，会列出可用序列号并退出。脚本默认预热 30 帧，从 RealSense 直接读取当前 640×480@30 RGB 流的内参和畸变，检测一帧有效 ChArUco，然后计算：
+
+```text
+T_base_camera = T_base_marker @ inverse(T_camera_marker)
+```
+
+默认输出到 `calibration/data/viperx_hand_eye/`：
+
+```text
+top_camera_to_base.npy       # T_base_camera，将相机光学坐标系中的点变换到 ViperX base
+top_camera_intrinsics.npz    # RGB 内参、畸变和分辨率
+top_camera_preview.png       # ChArUco 检测与坐标轴叠加预览
+```
+
+先检查 `top_camera_preview.png`：画面应清晰，板子应完整，坐标轴应贴在板上而不是悬空或明显翻转。该预览用于排除检测错误，不是独立的外参精度真值验证。
+
+脚本结束时会打印可直接写入采集配置的 `camera_params`。在 `collect_data_viperx.yaml` 中填入：
+
+```yaml
+- name: top_camera
+  parent_frame: base
+  extrinsic: /root/work/data/viperx_hand_eye/top_camera_to_base.npy
+  camera_params: [fx, fy, cx, cy, width, height]  # 替换为脚本实际打印的 6 个值
+```
+
+宿主机上的 `real-deployment/calibration/data` 在 Re3Sim Docker 中挂载为 `/root/work/data`，所以 YAML 使用上面的容器路径。如果顶部相机、marker 或机器人 base 中任何一个移动，或采集分辨率改变，必须重新运行标定。
+
 ## 4. 回家后可以离线完成的内容
 
 只要实验室数据完整，后续求解不再需要连接 ViperX、RealSense 或实验室网络。

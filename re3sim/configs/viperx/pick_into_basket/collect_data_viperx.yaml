@@ -1,0 +1,147 @@
+data_log_root_path: /root/work/data/sim_logs/viperx_pick_into_basket
+render: true
+headless: true
+
+simulator:
+  physics_dt: 1/30
+  rendering_dt: 1/30
+  rendering_interval: 1
+  startup_steps: 30
+
+tasks:
+  - type: ViperXPickAndPlace
+    name: viperx-pick-into-basket
+    env_num: 1
+    offset_size: 10.0
+    params:
+      task_max_duration: 120
+      physics_dt: 1/30
+      render: true
+
+      # Public training boundary. observations/qpos, observations/qvel and
+      # action all use this exact order and semantic shape.
+      data_contract:
+        version: viperx_joint_gripper_v1
+        order: [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate, gripper]
+        arm_unit: radian
+        gripper: 0=closed,1=open
+
+      collection:
+        image_quality: 80
+
+      control:
+        # High-level expert/policy actions and future LMDB samples use 10 Hz.
+        # The 30 Hz physics loop executes three substeps per policy action.
+        policy_hz: 10
+        # Deterministic policy handoff: only wrist_angle is +70 degrees.
+        home_q_rad: [0.0, 0.0, 0.0, 0.0, 1.22173048, 0.0]
+        home_timeout_s: 10.0
+        # Limit only the six arm-joint position targets; gripper units differ.
+        max_joint_speed_rad_s: 0.8
+        # Apply a less stiff, damped runtime profile without changing the URDF.
+        arm_stiffness_scale: 0.5
+        arm_damping: 3000.0
+
+      # Deterministic expert phases:
+      # pregrasp -> approach -> close -> lift -> place -> open -> retreat.
+      expert:
+        # Hand/TCP x-axis points down in the ViperX-base frame.
+        tcp_orientation_wxyz: [0.70710678, 0.0, 0.70710678, 0.0]
+        grasp_offset_m: [0.0, 0.0, 0.0]
+        pregrasp_offset_m: [0.0, 0.0, 0.10]
+        lift_offset_m: [0.0, 0.0, 0.12]
+        place_item_position_m: [0.36, 0.18, 0.15]
+        place_approach_offset_m: [0.0, 0.0, 0.10]
+        retreat_offset_m: [0.0, 0.0, 0.12]
+        gripper_settle_policy_steps: 5
+        joint_target_tolerance_rad: 0.05
+        success_tolerance_m: 0.05
+        max_policy_steps: 1200
+
+      planner:
+        # Pre-generated in writable data storage because viperx_asset is
+        # mounted read-only inside the container.
+        srdf_path: /root/work/data/viperx_stage10/vx300s_full_mplib.srdf
+        joint_vel_limits: [0.8, 0.8, 0.8, 0.8, 0.8, 0.8]
+        collision_resolution_m: 0.02
+        # Reconstructed background collision can be enabled after the first
+        # deterministic loop; Isaac physics collision remains active either way.
+        use_background_point_cloud: false
+
+      # Host calibration/data is mounted at /root/work/data in the container.
+      asset_root: /root/work/data
+
+      # The ViperX base is the Isaac world frame, so T_world_marker is the
+      # accepted T_base_marker calibration.
+      marker_to_isaacsim: /root/work/data/viperx_hand_eye/marker_2_base.npy
+
+      cameras:
+        # Stage-7 output is T_hand_camera for the rigid wrist camera.
+        - name: wrist_camera
+          parent_frame: hand
+          extrinsic: /root/work/data/viperx_hand_eye/cam_to_hand_pose.npy
+          camera_params: [390.79370117, 390.26028442, 321.16104126, 238.48770142, 640, 480]
+        # Optional fixed cameras: fill both fields to include them automatically.
+        - name: top_camera
+          parent_frame: base
+          extrinsic: null
+          camera_params: null
+        - name: side_camera
+          parent_frame: base
+          extrinsic: null
+          camera_params: null
+
+    background:
+      usd_path: reconstruction_source/mvs/scene_dense_mesh_refine_texture.usd
+      prim_path: /Table
+      gs_path: reconstruction_source/gs/0
+
+    items:
+      - name: black_block
+        type: DynamicCuboid
+        prim_path: /TaskItems/BlackBlock
+        params:
+          # Full dimensions in meters: 42 x 36 x 65 mm.
+          scale: [0.042, 0.036, 0.065]
+          color: [0.0, 0.0, 0.0]
+          # Startup pose in world == ViperX-base frame.
+          position: [0.45, 0.0, 0.15]
+          orientation: [1.0, 0.0, 0.0, 0.0]
+          mass: 0.05
+
+    robots:
+      - name: viperx
+        type: urdf
+        prim_path: /ViperX
+        params:
+          # Mount the repository viperx_asset folder at /root/dev/viperx_asset.
+          urdf_path: /root/dev/viperx_asset/urdf/vx300s_full.urdf
+          # Generated once by the Isaac URDF importer and reused afterwards.
+          usd_path: /root/work/data/viperx_stage10/vx300s.usd
+          fix_base: true
+          position_base: [0.0, 0.0, 0.0]
+          orientation_wxyz: [1.0, 0.0, 0.0, 0.0]
+          base_link: vx300s/base_link
+          hand_link: vx300s/ee_gripper_link
+          # Accepted Stage-10 TCP candidate: TCP equals the hand frame.
+          hand_to_tcp:
+            - [1.0, 0.0, 0.0, 0.0]
+            - [0.0, 1.0, 0.0, 0.0]
+            - [0.0, 0.0, 1.0, 0.0]
+            - [0.0, 0.0, 0.0, 1.0]
+          gripper:
+            # Scalar convention: 0 = closed, 1 = open.
+            startup_scalar: 1.0
+            closed_finger_m: 0.021
+            open_finger_m: 0.057
+            prop_rad: 0.0
+          arm_joint_order:
+            - waist
+            - shoulder
+            - elbow
+            - forearm_roll
+            - wrist_angle
+            - wrist_rotate
+
+global_params:
+  bg_collision_mesh_offset: 0.02

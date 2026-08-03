@@ -17,7 +17,11 @@ def extract_features(image_dir, database_path, output_dir, camera_model="PINHOLE
     os.makedirs(output_dir, exist_ok=True)
 
     options = {
-        "SiftExtraction": {},
+        # "SiftExtraction": {},
+        "SiftExtraction": {
+            "num_threads": 4,
+        },
+
         "ImageReaderOptions": {
             "camera_model": camera_model,
         },
@@ -26,9 +30,17 @@ def extract_features(image_dir, database_path, output_dir, camera_model="PINHOLE
     sift_options = pycolmap.SiftExtractionOptions(**options["SiftExtraction"])
     image_reader = pycolmap.ImageReaderOptions(**options["ImageReaderOptions"])
 
+    # pycolmap.extract_features(
+    #     database_path=database_path,
+    #     image_path=image_dir,
+    #     camera_model=camera_model,
+    #     reader_options=image_reader,
+    #     sift_options=sift_options,
+    # )
     pycolmap.extract_features(
         database_path=database_path,
         image_path=image_dir,
+        camera_mode=pycolmap.CameraMode.SINGLE,
         camera_model=camera_model,
         reader_options=image_reader,
         sift_options=sift_options,
@@ -206,8 +218,19 @@ def main():
             ],
             cwd=mvs_dir,
         )
+        # subprocess.run(
+        #     ["DensifyPointCloud", os.path.join(mvs_dir, "scene.mvs")], cwd=mvs_dir
+        # )
         subprocess.run(
-            ["DensifyPointCloud", os.path.join(mvs_dir, "scene.mvs")], cwd=mvs_dir
+            [
+                "DensifyPointCloud",
+                os.path.join(mvs_dir, "scene.mvs"),
+                "--patch-match-cuda-instances",
+                "2",
+                "--max-threads",
+                "8",
+            ],
+            cwd=mvs_dir,
         )
         subprocess.run(
             ["ReconstructMesh", "scene_dense.mvs", "-p", "scene_dense.ply"], cwd=mvs_dir
