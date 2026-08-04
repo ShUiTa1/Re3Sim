@@ -29,6 +29,7 @@ VIPERX_ARM_JOINT_ORDER = (
     "wrist_angle",
     "wrist_rotate",
 )
+VIPERX_DEEP_BLACK_RGB = (0.015, 0.015, 0.015)
 
 
 @dataclass
@@ -185,6 +186,41 @@ def _configure_arm_pd(
     return arm_indices
 
 
+def _bind_viperx_deep_black_material(robot_prim_path: str) -> None:
+    import omni.usd
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+    stage = omni.usd.get_context().get_stage()
+    robot_prim = stage.GetPrimAtPath(robot_prim_path)
+    material_path = f"{robot_prim_path}/Looks/ViperXDeepBlack"
+    material = UsdShade.Material.Define(stage, material_path)
+    shader = UsdShade.Shader.Define(stage, f"{material_path}/Shader")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+        Gf.Vec3f(*VIPERX_DEEP_BLACK_RGB)
+    )
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.6)
+    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+    material.CreateSurfaceOutput().ConnectToSource(
+        shader.ConnectableAPI(), "surface"
+    )
+
+    mesh_count = 0
+    for prim in Usd.PrimRange(robot_prim):
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+        imageable = UsdGeom.Imageable(prim)
+        if str(imageable.ComputeVisibility()) == "invisible":
+            continue
+        if str(imageable.ComputePurpose()) not in ("default", "render"):
+            continue
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
+        mesh_count += 1
+    if mesh_count == 0:
+        raise RuntimeError(f"No visible ViperX meshes found under {robot_prim_path}")
+    print(f"viperx_visual_material=deep_black meshes={mesh_count}")
+
+
 def _add_robot(
     world: Any,
     root_path: str,
@@ -198,6 +234,7 @@ def _add_robot(
     usd_path = _ensure_viperx_usd(params, config_dir)
     prim_path = root_path + robot_config["prim_path"]
     create_prim(prim_path=prim_path, usd_path=str(usd_path))
+    _bind_viperx_deep_black_material(prim_path)
     return world.scene.add(
         Articulation(
             prim_path=prim_path,
@@ -210,19 +247,56 @@ def _add_robot(
     )
 
 
+def _sample_item_spawn_pose(
+    params: dict[str, Any], rng: Any | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    position = np.asarray(params["position"], dtype=np.float64)
+    yaw_range = params.get("yaw_range_rad")
+    if yaw_range is None:
+        orientation = np.asarray(params["orientation"], dtype=np.float64)
+    else:
+        from scipy.spatial.transform import Rotation
+
+        rng = np.random.default_rng() if rng is None else rng
+        face_index = (
+            int(rng.integers(0, 3))
+            if bool(params.get("randomize_support_face", False))
+            else 0
+        )
+        yaw = float(rng.uniform(float(yaw_range[0]), float(yaw_range[1])))
+        face_euler_xyz = (
+            (0.0, 0.0, 0.0),
+            (0.0, -np.pi / 2.0, 0.0),
+            (np.pi / 2.0, 0.0, 0.0),
+        )
+        rotation = Rotation.from_euler("z", yaw) * Rotation.from_euler(
+            "xyz", face_euler_xyz[face_index]
+        )
+        xyzw = rotation.as_quat()
+        orientation = np.asarray(
+            [xyzw[3], xyzw[0], xyzw[1], xyzw[2]], dtype=np.float64
+        )
+    return position, orientation
+
+
 def _add_item(world: Any, root_path: str, item_config: dict[str, Any]) -> Any:
     from omni.isaac.core.objects import DynamicCuboid
     from omni.isaac.core.utils.prims import create_prim
 
     params = item_config["params"]
     prim_path = root_path + item_config["prim_path"]
+    position, orientation = _sample_item_spawn_pose(params)
+    print(
+        f"task_item_spawn_position_m={position.tolist()} "
+        f"orientation_wxyz={orientation.tolist()}"
+    )
     create_prim(prim_path.rsplit("/", 1)[0], prim_type="Xform")
     return world.scene.add(
         DynamicCuboid(
             prim_path=prim_path,
             name=item_config["name"],
-            position=np.asarray(params["position"], dtype=np.float64),
-            orientation=np.asarray(params["orientation"], dtype=np.float64),
+            position=position,
+            orientation=orientation,
             scale=np.asarray(params["scale"], dtype=np.float64),
             size=1.0,
             color=np.asarray(params["color"], dtype=np.float64),

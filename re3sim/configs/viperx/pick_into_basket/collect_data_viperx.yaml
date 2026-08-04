@@ -104,9 +104,12 @@ tasks:
           # Full dimensions in meters: 42 x 36 x 65 mm.
           scale: [0.042, 0.036, 0.065]
           color: [0.0, 0.0, 0.0]
-          # Startup pose in world == ViperX-base frame.
-          position: [0.45, 0.0, 0.15]
+          # Startup pose in world == ViperX-base frame. The block drops and
+          # settles before observations are collected.
+          position: [0.45, 0.0, 0.07]
           orientation: [1.0, 0.0, 0.0, 0.0]
+          randomize_support_face: true
+          yaw_range_rad: [-3.141592653589793, 3.141592653589793]
           mass: 0.05
 
     robots:
