@@ -179,14 +179,9 @@ def estimate_charuco_pose(
     """Return ``T_camera_marker`` and an axis preview for one BGR frame."""
 
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(
-        gray, board.getDictionary()
-    )
-    if marker_ids is None or len(marker_corners) == 0:
-        return None
-    _, corners, ids = cv2.aruco.interpolateCornersCharuco(
-        marker_corners, marker_ids, gray, board
-    )
+    detector = cv2.aruco.CharucoDetector(board)
+    corners, ids, _, _ = detector.detectBoard(gray)
+
     if corners is None or ids is None or len(corners) < 4:
         return None
     object_points, image_points = board.matchImagePoints(corners, ids)
