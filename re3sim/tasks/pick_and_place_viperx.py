@@ -26,6 +26,10 @@ GRIPPER_JOINT_ORDER = ("gripper", "left_finger", "right_finger")
 SEMANTIC_ACTION_ORDER = ARM_JOINT_ORDER + ("gripper",)
 CONTRACT_VERSION = "viperx_joint_gripper_v1"
 DYNAMIC_SEMANTIC_LABELS = frozenset({"robot", "item"})
+ROBOT_SUPPORT_SEMANTIC_LABEL = "robot_support"
+FOREGROUND_SEMANTIC_LABELS = DYNAMIC_SEMANTIC_LABELS | frozenset(
+    {ROBOT_SUPPORT_SEMANTIC_LABEL}
+)
 RENDERABLE_PRIM_TYPES = frozenset(
     {"Mesh", "Cube", "Sphere", "Cylinder", "Cone", "Capsule"}
 )
@@ -115,9 +119,9 @@ def compose_gaussian_foreground(
     segmentation: np.ndarray,
     id_to_labels: dict[Any, dict[str, Any]],
     *,
-    dynamic_labels: Iterable[str] = DYNAMIC_SEMANTIC_LABELS,
+    dynamic_labels: Iterable[str] = FOREGROUND_SEMANTIC_LABELS,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Keep visible robot/item pixels and replace everything else with GS."""
+    """Keep visible task foreground pixels and replace everything else with GS."""
     sim = np.asarray(sim_image, dtype=np.uint8)
     gaussian = np.asarray(gaussian_image, dtype=np.uint8)
     segment_ids = np.asarray(segmentation)
@@ -288,10 +292,12 @@ class ViperXPickAndPlaceTask:
         robot_config: dict[str, Any],
         task_params: dict[str, Any],
         config_dir: Path,
+        robot_support: Any | None = None,
     ) -> None:
         self.robot = robot
         self.item = item
         self.background = background
+        self.robot_support = robot_support
         self.root_path = root_path
         self.robot_config = robot_config
         self.task_params = task_params
@@ -299,6 +305,11 @@ class ViperXPickAndPlaceTask:
         self.dynamic_semantic_labels = frozenset(
             {"robot", self.item_semantic_label}
         )
+        self.foreground_semantic_labels = self.dynamic_semantic_labels
+        if robot_support is not None:
+            self.foreground_semantic_labels |= frozenset(
+                {ROBOT_SUPPORT_SEMANTIC_LABEL}
+            )
         self.hand_to_tcp = np.asarray(
             robot_config["params"]["hand_to_tcp"], dtype=np.float64
         )
@@ -310,8 +321,9 @@ class ViperXPickAndPlaceTask:
         self.gripper_indices = tuple(
             dof_names.index(name) for name in GRIPPER_JOINT_ORDER
         )
+        self.robot_asset_prim_path = root_path + robot_config["prim_path"]
         self.hand_prim_path = _find_link_prim_path(
-            root_path + robot_config["prim_path"],
+            self.robot_asset_prim_path,
             robot_config["params"]["hand_link"],
         )
         self.gripper_config = robot_config["params"]["gripper"]
@@ -339,7 +351,9 @@ class ViperXPickAndPlaceTask:
             add_update_semantics(prim, semantic_label=label, type_label="class")
 
         label_renderable_prims(
-            get_prim_at_path(self.robot.prim_path), "robot", add_class_label
+            get_prim_at_path(self.robot_asset_prim_path),
+            "robot",
+            add_class_label,
         )
         label_renderable_prims(
             get_prim_at_path(self.item.prim_path),
@@ -351,6 +365,13 @@ class ViperXPickAndPlaceTask:
             "BACKGROUND",
             add_class_label,
         )
+        robot_support = getattr(self, "robot_support", None)
+        if robot_support is not None:
+            label_renderable_prims(
+                get_prim_at_path(robot_support.prim_path),
+                ROBOT_SUPPORT_SEMANTIC_LABEL,
+                add_class_label,
+            )
 
     def _create_cameras(self) -> dict[str, Any]:
         from real2sim2real.utils.items import create_camera
@@ -450,14 +471,14 @@ class ViperXPickAndPlaceTask:
             segment_ids = np.asarray(segment_data["data"])
             id_to_labels = normalize_id_to_labels(
                 segment_data["info"].get("idToLabels", {}),
-                dynamic_labels=self.dynamic_semantic_labels,
+                dynamic_labels=self.foreground_semantic_labels,
             )
             composite, _ = compose_gaussian_foreground(
                 sim_image,
                 gaussian_image,
                 segment_ids,
                 id_to_labels,
-                dynamic_labels=self.dynamic_semantic_labels,
+                dynamic_labels=self.foreground_semantic_labels,
             )
             images[name] = composite
             sim_images[name] = sim_image
@@ -481,13 +502,3 @@ class ViperXPickAndPlaceTask:
             "masks": masks,
             "mask_id_to_labels": mask_id_to_labels,
         }
-
-    def is_success(self) -> bool:
-        target = np.asarray(
-            self.task_params["expert"]["place_item_position_m"], dtype=np.float64
-        )
-        tolerance = float(self.task_params["expert"].get("success_tolerance_m", 0.05))
-        position, _ = self.item.get_world_pose()
-        return bool(
-            np.linalg.norm(np.asarray(position)[:2] - target[:2]) <= tolerance
-        )

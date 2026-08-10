@@ -15,6 +15,7 @@ class PickPlacePhase:
     tcp_pose: np.ndarray | None
     gripper_scalar: float
     hold_policy_steps: int = 1
+    joint_target_rad: np.ndarray | None = None
 
 
 def _as_transform(position: np.ndarray, orientation_wxyz: Iterable[float]) -> np.ndarray:
@@ -43,9 +44,12 @@ def tcp_target_to_hand_target(
 
 
 def build_pick_place_sequence(
-    item_pose: np.ndarray, expert_config: dict[str, Any]
+    item_pose: np.ndarray,
+    expert_config: dict[str, Any],
+    *,
+    home_q_rad: Iterable[float],
 ) -> tuple[PickPlacePhase, ...]:
-    """Build the fixed pregrasp-to-retreat phase order around one item pose."""
+    """Build the fixed pick/place sequence ending at the configured home q."""
     item_pose = np.asarray(item_pose, dtype=np.float64)
     if item_pose.shape != (4, 4):
         raise ValueError("item_pose must have shape (4, 4)")
@@ -81,6 +85,9 @@ def build_pick_place_sequence(
     close_hold = int(expert_config.get("gripper_settle_policy_steps", 5))
     if close_hold < 1:
         raise ValueError("gripper_settle_policy_steps must be positive")
+    home_q_rad = np.asarray(home_q_rad, dtype=np.float64)
+    if home_q_rad.shape != (6,) or not np.all(np.isfinite(home_q_rad)):
+        raise ValueError("home_q_rad must contain six finite arm joint angles")
     return (
         PickPlacePhase(
             "pregrasp",
@@ -108,6 +115,12 @@ def build_pick_place_sequence(
             _as_transform(place_tcp_position + retreat_offset, orientation),
             1.0,
         ),
+        PickPlacePhase(
+            "home",
+            None,
+            1.0,
+            joint_target_rad=home_q_rad.copy(),
+        ),
     )
 
 
@@ -133,6 +146,7 @@ class ViperXPickAndPlaceController:
         hand_link: str,
         policy_dt: float,
         joint_target_tolerance_rad: float = 0.02,
+        base_pose_world: np.ndarray | None = None,
         joint_vel_limits: Iterable[float] | None = None,
         collision_points: np.ndarray | None = None,
         collision_resolution_m: float = 0.02,
@@ -150,8 +164,17 @@ class ViperXPickAndPlaceController:
                 joint_vel_limits, dtype=np.float64
             )
         self.planner = mplib.Planner(**planner_args)
+        resolved_base_pose = (
+            np.eye(4, dtype=np.float64)
+            if base_pose_world is None
+            else np.asarray(base_pose_world, dtype=np.float64)
+        )
+        if resolved_base_pose.shape != (4, 4) or not np.all(
+            np.isfinite(resolved_base_pose)
+        ):
+            raise ValueError("base_pose_world must be a finite 4x4 matrix")
         self.planner.set_base_pose(
-            mplib.Pose(p=[0.0, 0.0, 0.0], q=[1.0, 0.0, 0.0, 0.0])
+            _matrix_to_mplib_pose(resolved_base_pose, mplib)
         )
         if collision_points is not None and len(collision_points):
             self.planner.update_point_cloud(
@@ -189,13 +212,25 @@ class ViperXPickAndPlaceController:
         self._hold_remaining = None
 
     def _plan_phase(self, phase: PickPlacePhase, current_arm: np.ndarray) -> bool:
-        hand_target = tcp_target_to_hand_target(phase.tcp_pose, self.hand_to_tcp)
-        target_pose = _matrix_to_mplib_pose(hand_target, self._mplib)
         current_qpos = self.planner.pad_move_group_qpos(current_arm)
         try:
-            result = self.planner.plan_pose(
-                target_pose, current_qpos, time_step=self.policy_dt
-            )
+            if phase.joint_target_rad is not None:
+                goal_qpos = self.planner.pad_move_group_qpos(
+                    phase.joint_target_rad
+                )
+                result = self.planner.plan_qpos(
+                    [goal_qpos], current_qpos, time_step=self.policy_dt
+                )
+            else:
+                if phase.tcp_pose is None:
+                    raise ValueError(f"{phase.name}: phase has no motion target")
+                hand_target = tcp_target_to_hand_target(
+                    phase.tcp_pose, self.hand_to_tcp
+                )
+                target_pose = _matrix_to_mplib_pose(hand_target, self._mplib)
+                result = self.planner.plan_pose(
+                    target_pose, current_qpos, time_step=self.policy_dt
+                )
         except Exception as error:
             self.failed_reason = f"{phase.name}: {error}"
             return False
@@ -224,7 +259,7 @@ class ViperXPickAndPlaceController:
             return state.copy(), True, {"status": "done", "phase": "done"}
 
         phase = self.phases[self.phase_index]
-        if phase.tcp_pose is None:
+        if phase.tcp_pose is None and phase.joint_target_rad is None:
             if self._hold_remaining is None:
                 self._hold_remaining = phase.hold_policy_steps
             action = np.concatenate([state[:6], [phase.gripper_scalar]])

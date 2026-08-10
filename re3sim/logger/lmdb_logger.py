@@ -40,12 +40,15 @@ class LmdbLogger(BaseLogger):
         # save image data jpg
         for key, value in self.image_data_logger_jpg.items():
             for i, image in enumerate(value):
+                image = image.astype(np.uint8)
+                if image.ndim == 3 and image.shape[2] == 3:
+                    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                 txn.put(
                     f"{key}/{i}".encode("utf-8"),
                     pickle.dumps(
                         cv2.imencode(
                             ".jpg",
-                            image.astype(np.uint8),
+                            image,
                             [cv2.IMWRITE_JPEG_QUALITY, self.image_quality],
                         )[1]
                     ),
